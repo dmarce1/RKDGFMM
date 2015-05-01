@@ -1,0 +1,78 @@
+\documentclass[preprint]{aastex}
+\usepackage{natbib}
+\usepackage{morefloats}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{verbatim}
+\usepackage{color}
+\usepackage{ulem}
+\usepackage{appendix}
+\usepackage{algpseudocode}
+\usepackage{algorithmicx}
+\bibliographystyle{apj}
+\begin{document}
+
+\newcommand{\fig}[1]{Figure \ref{#1}}
+\newcommand{\eq}[1]{Equation (\ref{#1})}
+\newcommand{\eqs}[2]{Equations (\ref{#1}) - (\ref{#2})}
+\newcommand{\vc}[1]{ {\bf{#1}} }
+\newcommand{\grad}[1]{ \vc{\nabla } #1 }
+\newcommand{\dv}[1]{ \vc{\nabla } \cdot #1 }
+\newcommand{\dt}[1]{ \frac{\partial}{\partial t} #1 }
+\newcommand{\dx}[2]{ \frac{\partial}{\partial #1} #2 }
+\newcount\colveccount
+\newcommand*\colvec[1]{
+        \global\colveccount#1
+        \begin{pmatrix}
+        \colvecnext
+}
+\def\colvecnext#1{
+        #1
+        \global\advance\colveccount-1
+        \ifnum\colveccount>0
+                \\
+                \expandafter\colvecnext
+        \else
+                \end{pmatrix}
+        \fi
+}
+
+\title{Octupus}
+\author{Dominic C. Marcello}
+
+\section{}
+
+The general form for hyperbolic conservation laws is
+\begin{equation}
+\dt \vc{w} + \dv{\vc{f\left(\vc{w}\right)}} = \vc{s},
+\end{equation}
+where the matrix $\frac{\partial \vc{f\left(\vc{w}\right)}}{\partial \vc{w}}$ has real eigenvalues. For Euler's equations of incompressible ideal gas flow, 
+\begin{equation}
+\vc{w} = \colvec{3}{\rho}{\vc{s}}{\mathrm{E}},
+\end{equation}
+and
+\begin{equation}
+\vc{f\left(\vc{w}\right)} = \colvec{3}{\rho \vc{v} }{\vc{s} \vc{v} + \mathrm{p}}{\left(\mathrm{E} + \mathrm{p}\right) \vc{v}},
+\end{equation}
+where $\rho$ is the mass density, $\vc{s}$ is the momentum density, $\mathrm{E}$ is the energy density, 
+\begin{equation}
+\vc{v} = \frac{\vc{s}}{\rho}
+\end{equation}
+is the velocity, and 
+\begin{equation}
+p := \left(\gamma-1\right) (\mathrm{E} - \frac{1}{2} \rho u^2)
+\end{equation}
+is the gas pressure for a given ratio of specific heats, $\gamma$. For flow in conservative scalar potentials, such as classical gravity,
+\begin{equation}
+\vc{s} := \colvec{3}{0}{-\rho \grad{\phi}}{-\rho \vc{u} \cdot \grad{\phi}},
+\end{equation}
+where $\phi$ is the potential.
+
+We use the positivty limiter of \cite{ZS2010}.
+
+\bibliography{paper1}
+
+\end{document}
+
+
+

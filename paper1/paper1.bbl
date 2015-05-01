@@ -1,0 +1,7 @@
+\begin{thebibliography}{}
+\expandafter\ifx\csname natexlab\endcsname\relax\def\natexlab#1{#1}\fi
+
+\bibitem[{Zhang \& Shu(2010)}]{ZS2010}
+Zhang, X., \& Shu, C.-W. 2010, Journal of Computational Physics, 229, 8918
+
+\end{thebibliography}

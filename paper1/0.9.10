@@ -1,0 +1,39 @@
+\documentclass[preprint]{aastex}
+\usepackage{natbib}
+\usepackage{morefloats}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{verbatim}
+\usepackage{color}
+\usepackage{ulem}
+\usepackage{appendix}
+\usepackage{algpseudocode}
+\usepackage{algorithmicx}
+\bibliographystyle{apj}
+\begin{document}
+
+\newcommand{\fig}[1]{Figure \ref{#1}}
+\newcommand{\eq}[1]{Equation (\ref{#1})}
+\newcommand{\eqs}[2]{Equations (\ref{#1}) - (\ref{#2})}
+\newcommand{\vc}[1]{ {\bf{#1}} }
+\newcommand{\grad}[1]{ \vc{\nabla } #1 }
+\newcommand{\dv}[1]{ \vc{\nabla } \cdot #1 }
+\newcommand{\dt}[1]{ \frac{\partial}{\partial t} #1 }
+\newcommand{\dx}[2]{ \frac{\partial}{\partial #1} #2 }
+
+\title{Octupus}
+\author{Dominic C. Marcello}
+
+\section{}
+
+The general form for hyperbolic conservation laws is
+\begin{math}
+\dt \vc{w} + \dv{\vc{f}} = \vc{s},
+\end{math}
+\bibliography{paper}
+
+\end{document}
+
+
+
+
