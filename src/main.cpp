@@ -22,6 +22,7 @@ int main(void) {
 	g.initialize(blast_wave);
 	g.enforce_boundaries(0);
 	g.project(0);
+	g.compute_fmm(0);
 	real t = real(0);
 	real dt;
 	real dx = real(2) / real(NX);
@@ -44,6 +45,7 @@ int main(void) {
 			g.compute_next_u(rk, dt);
 			g.enforce_boundaries(rk2);
 			g.project(rk2);
+			g.compute_fmm(rk2);
 			amax = g.enforce_positivity(rk2);
 		}
 		t += dt;

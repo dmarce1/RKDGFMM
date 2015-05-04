@@ -8,43 +8,72 @@
 #ifndef FOURIER_LEGENDRE_HPP_
 #define FOURIER_LEGENDRE_HPP_
 
+#include <boost/archive/binary_oarchive.hpp>
+#include <boost/archive/binary_iarchive.hpp>
+#include <boost/serialization/valarray.hpp>
+#include <boost/serialization/vector.hpp>
+#include <fstream>
+
 #include "RKDGFMM.hpp"
 
 #include "legendre.hpp"
 
 class fourier_legendre {
 private:
-	const integer N;
-	const integer N3;
-	integer N_Lobatto;
-	std::vector<real> quadrature_point;
-	std::vector<real> quadrature_weight;
-	std::vector<real> lobatto_quadrature_point;
-	std::vector<real> lobatto_quadrature_weight;
-	std::vector<std::array<real,NDIM>> quadrature_point_3d;
-	std::vector<simd_vector> transform_coefficient;
-	std::vector<simd_vector> inverse_transform_coefficient;
-	std::vector<std::vector<simd_vector>> lobatto_inverse_transform_coefficient;
-	std::vector<std::vector<simd_vector>> volume_transform_coefficient;
-	std::vector<std::vector<simd_vector>> volume_inverse_transform_coefficient;
-	std::vector<std::vector<simd_vector>> surface_transform_coefficient;
-	std::vector<std::vector<simd_vector>> surface_inverse_transform_coefficient;
+	static integer PHI;
+	static integer PHI3;
+	static integer N_Lobatto;
+	static std::vector<real> qpt;
+	static std::vector<real> hires_qwt;
+	static std::vector<real> hires_qpt;
+	static std::vector<real> qwt;
+	static std::vector<real> lobatto_qpt;
+	static std::vector<real> lobatto_qwt;
+	static std::vector<std::array<real, NDIM>> qpt_3d;
+	static std::vector<simd_vector> transform_coefficient;
+	static std::vector<simd_vector> inverse_transform_coefficient;
+	static std::vector<std::vector<simd_vector>> lobatto_inverse_transform_coefficient;
+	static std::vector<std::vector<simd_vector>> volume_transform_coefficient;
+	static std::vector<std::vector<simd_vector>> volume_inverse_transform_coefficient;
+	static std::vector<std::vector<simd_vector>> surface_transform_coefficient;
+	static std::vector<std::vector<simd_vector>> surface_inverse_transform_coefficient;
+	static std::vector<std::vector<simd_vector>> restrict_coefficients;
+	static std::vector<std::vector<simd_vector>> prolong_coefficients;
+	static std::vector<std::vector<simd_vector>> P2P;
+	static std::vector<simd_vector> rho_2M;
+	static std::vector<simd_vector> L2_phi;
+	static std::vector<simd_vector> L2_gx;
+	static std::vector<simd_vector> L2_gy;
+	static std::vector<simd_vector> L2_gz;
+	static std::vector<std::vector<simd_vector>> M2M;
+	static std::vector<std::vector<simd_vector>> M2L;
+	static std::vector<std::vector<simd_vector>> L2L;
+
+	static void write(const char* filename);
+	static void read(const char* filename);
+	static void allocate();
 public:
-	integer pindex(integer l, integer m, integer n) const;
-	fourier_legendre(integer);
-	simd_vector transform(const simd_vector&) const;
-	simd_vector inverse_transform(const simd_vector&) const;
-	integer lobatto_point_count() const;
-	real lobatto_edge_weight() const;
-	simd_vector lobatto_inverse_transform(const simd_vector&, dimension) const;
-	simd_vector volume_transform(dimension, const simd_vector&) const;
-	simd_vector volume_inverse_transform(dimension, const simd_vector&) const;
-	simd_vector surface_transform(face, const simd_vector&) const;
-	simd_vector surface_inverse_transform(face, const simd_vector&) const;
-	const std::vector<std::array<real,NDIM>>& quadrature_points() const;
-	const std::vector<real>& quadrature_weights() const;
+	static integer pindex(integer l, integer m, integer n);
+	fourier_legendre();
+	static simd_vector transform(const simd_vector&);
+	static simd_vector inverse_transform(const simd_vector&);
+	static integer lobatto_point_count();
+	static real lobatto_edge_weight();
+	static simd_vector lobatto_inverse_transform(const simd_vector&, dimension);
+	static simd_vector volume_transform(dimension, const simd_vector&);
+	static simd_vector volume_inverse_transform(dimension, const simd_vector&);
+	static simd_vector surface_transform(face, const simd_vector&);
+	static simd_vector surface_inverse_transform(face, const simd_vector&);
+	static const std::vector<std::array<real, NDIM>>& quadrature_points();
+	static const std::vector<real>& quadrature_weights();
+	static simd_vector prolong(const simd_vector&, integer);
+	static simd_vector _restrict(const simd_vector&, integer);
+	static simd_vector p2p_transform(integer, integer, integer, const simd_vector&);
+	static simd_vector m2l_transform(integer, integer, integer, const simd_vector&);
+	static simd_vector m2m_transform(integer, const simd_vector&);
+	static simd_vector l2l_transform(integer, const simd_vector&);
+	static simd_vector l2p_transform(const simd_vector&);
+	static simd_vector p2m_transform(const simd_vector&);
 };
-
-
 
 #endif /* FOURIER_LEGENDRE_HPP_ */

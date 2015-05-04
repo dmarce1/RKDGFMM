@@ -14,15 +14,20 @@
 using real =  double;
 using integer = long long int;
 
-static constexpr integer P = 3;
+#define NOGRAVITY
+
+static constexpr integer LMAX = 6;
+static constexpr integer L2 = LMAX*LMAX;
+static constexpr integer P = 2;
 static constexpr integer INX = 16;
 static constexpr integer NF = 6;
 static constexpr integer BW = 2;
 static constexpr integer NX = INX + 2 * BW;
 static const real fgamma = real(7) / real(4);
-static constexpr integer NRK = P;
+static constexpr integer NRK = 4;
 static constexpr real dual_energy_switch1 = 1.0e-1;
 static constexpr real dual_energy_switch2 = 1.0e-3;
+static constexpr integer DNMAX = 3;
 
 static constexpr integer N3 = NX * NX * NX;
 static constexpr integer P3 = (P + 2) * (P + 1) * P / 6;

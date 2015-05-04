@@ -5,6 +5,7 @@
 # Add inputs and outputs from these tool invocations to the build variables 
 CPP_SRCS += \
 ../src/conserved.cpp \
+../src/exafmm.cpp \
 ../src/fourier_legendre.cpp \
 ../src/grid.cpp \
 ../src/initial.cpp \
@@ -14,6 +15,7 @@ CPP_SRCS += \
 
 OBJS += \
 ./src/conserved.o \
+./src/exafmm.o \
 ./src/fourier_legendre.o \
 ./src/grid.o \
 ./src/initial.o \
@@ -23,6 +25,7 @@ OBJS += \
 
 CPP_DEPS += \
 ./src/conserved.d \
+./src/exafmm.d \
 ./src/fourier_legendre.d \
 ./src/grid.d \
 ./src/initial.d \
@@ -35,7 +38,7 @@ CPP_DEPS += \
 src/%.o: ../src/%.cpp
 	@echo 'Building file: $<'
 	@echo 'Invoking: GCC C++ Compiler'
-	g++ -march=corei7-avx -std=c++0x -DNDEBUG -O3 -Wall -c -fmessage-length=0 -MMD -MP -MF"$(@:%.o=%.d)" -MT"$(@:%.o=%.d)" -o "$@" "$<"
+	g++ -march=corei7-avx -std=c++0x -DNDEBUG -DSpherical -DEXPANSION=5 -O3 -Wall -c -fmessage-length=0 -MMD -MP -MF"$(@:%.o=%.d)" -MT"$(@:%.o=%.d)" -o "$@" "$<"
 	@echo 'Finished building: $<'
 	@echo ' '
 

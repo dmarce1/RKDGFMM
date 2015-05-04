@@ -44,7 +44,7 @@ all: RKDGFMM
 RKDGFMM: $(OBJS) $(USER_OBJS)
 	@echo 'Building target: $@'
 	@echo 'Invoking: GCC C++ Linker'
-	g++  -o "RKDGFMM" $(OBJS) $(USER_OBJS) $(LIBS)
+	g++ -L/opt/intel/composer_xe_2015.2.164/compiler/lib/intel64 -L/home/dmarce1/lib -o "RKDGFMM" $(OBJS) $(USER_OBJS) $(LIBS)
 	@echo 'Finished building target: $@'
 	@echo ' '
 

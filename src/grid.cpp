@@ -12,6 +12,7 @@
 #include <limits>
 #include <silo.h>
 #include <set>
+#include <utility>
 
 real minmod(real a, real b) {
 	return (std::copysign(real(1), a) + std::copysign(real(1), b)) * std::min(std::abs(a), std::abs(b)) / real(2);
@@ -28,11 +29,26 @@ simd_vector minmod(const simd_vector& a, const simd_vector& b) {
 }
 
 grid::grid() :
-		dx(real(2) / real(INX)), Fourier(P) {
+		dx(real(2) / real(INX)) {
 	U_p.resize(NRK + 1, std::vector<conserved_vars>(N3, conserved_vars(P3)));
 	F_p.resize(NFACE, std::vector<std::vector<simd_vector>>(N3, std::vector<simd_vector>(NF, simd_vector(P3))));
 	S_p.resize(N3, std::vector<simd_vector>(NF, simd_vector(P3)));
 	dU_dt_p.resize(NRK, std::vector<std::vector<simd_vector>>(N3, std::vector<simd_vector>(NF, simd_vector(P3))));
+	nlevel = 0;
+	for (integer inx = INX; inx > 1; inx /= 2) {
+		++nlevel;
+	}
+	phi_l.resize(nlevel);
+	phi_p.resize(NX * NX * NX, simd_vector(P3));
+	rho_l.resize(nlevel);
+	nlevel = 0;
+	for (integer inx = INX; inx > 1; inx /= 2) {
+		const integer nx = inx + 2 * BW;
+		rho_l[nlevel].resize(nx * nx * nx, simd_vector(L2));
+		phi_l[nlevel].resize(nx * nx * nx, simd_vector(L2));
+		++nlevel;
+	}
+
 	d_i[XDIM] = dx_i = NX * NX;
 	d_i[YDIM] = dy_i = NX;
 	d_i[ZDIM] = dz_i = 1;
@@ -629,7 +645,103 @@ void grid::output(const char* filename) const {
 	DBClose(db);
 }
 
+void grid::compute_multipoles(integer rk) {
+	integer lev = 0;
+	for (integer iii = 0; iii != N3; ++iii) {
+		rho_l[lev][iii] = Fourier.p2m_transform(U_p[rk][iii].rho());
+	}
+	for (integer inx = INX / 2; inx > 1; inx >>= 1) {
+		++lev;
+		const integer nxp = inx + 2 * BW;
+		const integer nxc = (2 * inx) + 2 * BW;
+		std::fill(std::begin(rho_l[lev]), std::end(rho_l[lev]), simd_vector(real(0), L2));
+		for (integer ip = BW; ip != nxp - BW; ++ip) {
+			for (integer jp = BW; jp != nxp - BW; ++jp) {
+				for (integer kp = BW; kp != nxp - BW; ++kp) {
+					for (integer ci = 0; ci != NVERTEX; ++ci) {
+						const integer ic = (2 * ip - BW) + ((ci >> 0) & 1);
+						const integer jc = (2 * jp - BW) + ((ci >> 1) & 1);
+						const integer kc = (2 * kp - BW) + ((ci >> 2) & 1);
+						const integer iiic = nxc * nxc * ic + nxc * jc + kc;
+						const integer iiip = nxp * nxp * ip + nxp * jp + kp;
+						simd_vector tmp = Fourier.m2m_transform(ci, rho_l[lev - 1][iiic]);
+						rho_l[lev][iiip] += tmp;
+					}
+				}
+			}
+		}
+	}
+}
 
+void grid::compute_interactions(integer rk) {
+	integer this_level = nlevel - 1;
+	for (integer inx = 2; inx <= INX; inx <<= 1) {
+		const integer nx = inx + 2 * BW;
+		for (integer i0 = BW; i0 != nx - BW; ++i0) {
+			for (integer j0 = BW; j0 != nx - BW; ++j0) {
+				for (integer k0 = BW; k0 != nx - BW; ++k0) {
+					const integer iii0 = i0 * nx * nx + j0 * nx + k0;
+					phi_l[0][iii0] = real(0);
+					if (this_level == 0) {
+						phi_p[iii0] = real(0);
+					}
+					const integer imin = 2 * ((i0 / 2) - 1);
+					const integer imax = 2 * ((i0 / 2) + 1) + 1;
+					const integer jmin = 2 * ((j0 / 2) - 1);
+					const integer jmax = 2 * ((j0 / 2) + 1) + 1;
+					const integer kmin = 2 * ((k0 / 2) - 1);
+					const integer kmax = 2 * ((k0 / 2) + 1) + 1;
+					for (integer i1 = imin; i1 <= imax; ++i1) {
+						for (integer j1 = jmin; j1 <= jmax; ++j1) {
+							for (integer k1 = kmin; k1 <= kmax; ++k1) {
+								const integer iii1 = i1 * nx * nx + j1 * nx + k1;
+								if (this_level != 0) {
+									phi_l[this_level][iii0] += Fourier.m2l_transform(i1 - i0, j1 - j0, k1 - k0,
+											rho_l[this_level][iii1]);
+								} else {
+									auto tmp = Fourier.p2p_transform(i1 - i0, j1 - j0, k1 - k0, U_p[rk][iii1].rho());
+									phi_p[iii0] += tmp;
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+		--this_level;
+	}
+}
+
+void grid::expand_phi(integer rk) {
+	integer lev = nlevel - 1;
+	for (integer inx = 4; inx <= INX; inx <<= 1) {
+		--lev;
+		const integer nxp = (inx / 2) + 2 * BW;
+		const integer nxc = inx + 2 * BW;
+		for (integer ip = BW; ip != nxp - BW; ++ip) {
+			for (integer jp = BW; jp != nxp - BW; ++jp) {
+				for (integer kp = BW; kp != nxp - BW; ++kp) {
+					const integer iiip = nxp * nxp * ip + nxp * jp + kp;
+					for (integer ci = 0; ci != NVERTEX; ++ci) {
+						const integer ic = (2 * ip - BW) + ((ci >> 0) & 1);
+						const integer jc = (2 * jp - BW) + ((ci >> 1) & 1);
+						const integer kc = (2 * kp - BW) + ((ci >> 2) & 1);
+						const integer iiic = nxc * nxc * ic + nxc * jc + kc;
+						phi_l[lev][iiic] += Fourier.l2l_transform(ci, phi_l[lev + 1][iiip]);
+					}
+				}
+			}
+		}
+	}
+	for (integer i = BW; i != NX - BW; ++i) {
+		for (integer j = BW; j != NX - BW; ++j) {
+			for (integer k = BW; k != NX - BW; ++k) {
+				const integer iii = i * dx_i + j * dy_i + k * dz_i;
+				phi_p[iii] += Fourier.l2p_transform(phi_l[0][iii]);
+			}
+		}
+	}
+}
 
 void grid::diagnostics(integer rk) {
 	const auto& u_p = U_p[rk];

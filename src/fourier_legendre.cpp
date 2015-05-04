@@ -7,18 +7,48 @@
 
 #include "fourier_legendre.hpp"
 #include "legendre.hpp"
-
 #include <stdio.h>
+#include <atomic>
+#include "exafmm.hpp"
 
-integer fourier_legendre::pindex(integer l, integer m, integer n) const {
+integer fourier_legendre::PHI = 2 * P;
+integer fourier_legendre::PHI3 = (PHI + 2) * (PHI + 1) * PHI / 6;
+integer fourier_legendre::N_Lobatto;
+std::vector<std::vector<simd_vector>> fourier_legendre::P2P;
+std::vector<real> fourier_legendre::qpt;
+std::vector<real> fourier_legendre::hires_qwt;
+std::vector<real> fourier_legendre::hires_qpt;
+std::vector<real> fourier_legendre::qwt;
+std::vector<real> fourier_legendre::lobatto_qpt;
+std::vector<real> fourier_legendre::lobatto_qwt;
+std::vector<std::array<real, NDIM>> fourier_legendre::qpt_3d;
+std::vector<simd_vector> fourier_legendre::transform_coefficient;
+std::vector<simd_vector> fourier_legendre::inverse_transform_coefficient;
+std::vector<std::vector<simd_vector>> fourier_legendre::lobatto_inverse_transform_coefficient;
+std::vector<std::vector<simd_vector>> fourier_legendre::volume_transform_coefficient;
+std::vector<std::vector<simd_vector>> fourier_legendre::volume_inverse_transform_coefficient;
+std::vector<std::vector<simd_vector>> fourier_legendre::surface_transform_coefficient;
+std::vector<std::vector<simd_vector>> fourier_legendre::surface_inverse_transform_coefficient;
+std::vector<std::vector<simd_vector>> fourier_legendre::restrict_coefficients;
+std::vector<std::vector<simd_vector>> fourier_legendre::prolong_coefficients;
+std::vector<simd_vector> fourier_legendre::rho_2M;
+std::vector<simd_vector> fourier_legendre::L2_phi;
+std::vector<simd_vector> fourier_legendre::L2_gx;
+std::vector<simd_vector> fourier_legendre::L2_gy;
+std::vector<simd_vector> fourier_legendre::L2_gz;
+std::vector<std::vector<simd_vector>> fourier_legendre::M2M;
+std::vector<std::vector<simd_vector>> fourier_legendre::M2L;
+std::vector<std::vector<simd_vector>> fourier_legendre::L2L;
+
+integer fourier_legendre::pindex(integer l, integer m, integer n) {
 	const integer lmn = l + m + n;
 	const integer mn = n + m;
 	return ((lmn + 2) * (lmn + 1) * lmn) / 6 + ((mn + 1) * mn) / 2 + n;
 
 }
 
-const std::vector<real>& fourier_legendre::quadrature_weights() const {
-	return quadrature_weight;
+const std::vector<real>& fourier_legendre::quadrature_weights() {
+	return qwt;
 }
 
 static integer gindex(integer x, integer y, integer z, integer N) {
@@ -29,261 +59,674 @@ static integer gindex(integer y, integer z, integer N) {
 	return y * N + z;
 }
 
-const std::vector<std::array<real, NDIM>>& fourier_legendre::quadrature_points() const {
-	return quadrature_point_3d;
+const std::vector<std::array<real, NDIM>>& fourier_legendre::quadrature_points() {
+	return qpt_3d;
 }
 
-fourier_legendre::fourier_legendre(integer n) :
-		N(n), N3((n + 2) * (n + 1) * n / 6) {
-	N_Lobatto = std::max(integer((n + 4) / real(2)), integer(2));
-	quadrature_point = LegendreP_roots(N);
-	quadrature_weight.resize(N);
-	auto tmp = dLegendreP_dx_roots(N_Lobatto - 1);
-	lobatto_quadrature_point.resize(N_Lobatto);
-	lobatto_quadrature_point[0] = -real(1);
-	for (integer qi = 0; qi < N_Lobatto - 2; ++qi) {
-		lobatto_quadrature_point[qi + 1] = tmp[qi];
-	}
-	lobatto_quadrature_point[N_Lobatto - 1] = +real(1);
-	lobatto_quadrature_weight.resize(N_Lobatto);
-	transform_coefficient.resize(N3);
-	surface_transform_coefficient.resize(NFACE, std::vector<simd_vector>(N3));
-	volume_transform_coefficient.resize(NDIM, std::vector<simd_vector>(N3));
-	for (integer i = 0; i != N3; ++i) {
-		transform_coefficient[i] = simd_vector(real(0), N * N * N);
+void fourier_legendre::allocate() {
+	const integer ML_size = (2 * DNMAX + 1) * (2 * DNMAX + 1) * (2 * DNMAX + 1);
+	rho_2M.resize(L2, simd_vector(real(0), P3));
+	L2_phi.resize(P3, simd_vector(real(0), L2));
+	L2_gx.resize(P3, simd_vector(real(0), L2));
+	L2_gy.resize(P3, simd_vector(real(0), L2));
+	L2_gz.resize(P3, simd_vector(real(0), L2));
+	M2M.resize(NVERTEX, std::vector<simd_vector>(L2, simd_vector(real(0), L2)));
+	L2L.resize(NVERTEX, std::vector<simd_vector>(L2, simd_vector(real(0), L2)));
+	M2L.resize(ML_size, std::vector<simd_vector>(L2, simd_vector(real(0), L2)));
+	P2P.resize((2 * DNMAX + 1) * (2 * DNMAX + 1) * (2 * DNMAX + 1),
+			std::vector<simd_vector>(P3, simd_vector(real(0), P3)));
+	qpt_3d.resize(P * P * P);
+	qpt.resize(P);
+	qwt.resize(P);
+	hires_qwt.resize(PHI);
+	hires_qpt.resize(PHI);
+	restrict_coefficients.resize(P3, std::vector<simd_vector>(NVERTEX, simd_vector(P3)));
+	prolong_coefficients.resize(P3, std::vector<simd_vector>(NVERTEX, simd_vector(P3)));
+	lobatto_qpt.resize(N_Lobatto);
+	lobatto_qwt.resize(N_Lobatto);
+	transform_coefficient.resize(P3);
+	surface_transform_coefficient.resize(NFACE, std::vector<simd_vector>(P3));
+	volume_transform_coefficient.resize(NDIM, std::vector<simd_vector>(P3));
+	for (integer i = 0; i != P3; ++i) {
+		transform_coefficient[i] = simd_vector(real(0), P * P * P);
 		for (integer fc = 0; fc != NFACE; ++fc) {
-			surface_transform_coefficient[fc][i] = simd_vector(real(0), N * N);
+			surface_transform_coefficient[fc][i] = simd_vector(real(0), P * P);
 		}
 		for (integer dim = 0; dim != NDIM; ++dim) {
-			volume_transform_coefficient[dim][i] = simd_vector(real(0), N * N * N);
+			volume_transform_coefficient[dim][i] = simd_vector(real(0), P * P * P);
 		}
 	}
-	inverse_transform_coefficient.resize(N * N * N);
-	lobatto_inverse_transform_coefficient.resize(NDIM, std::vector<simd_vector>(N * N * N_Lobatto));
-	surface_inverse_transform_coefficient.resize(NFACE, std::vector<simd_vector>(N * N));
-	volume_inverse_transform_coefficient.resize(NDIM, std::vector<simd_vector>(N * N * N));
-	for (integer i = 0; i != N * N * N_Lobatto; ++i) {
+	inverse_transform_coefficient.resize(P * P * P);
+	lobatto_inverse_transform_coefficient.resize(NDIM, std::vector<simd_vector>(P * P * N_Lobatto));
+	surface_inverse_transform_coefficient.resize(NFACE, std::vector<simd_vector>(P * P));
+	volume_inverse_transform_coefficient.resize(NDIM, std::vector<simd_vector>(P * P * P));
+	for (integer i = 0; i != P * P * N_Lobatto; ++i) {
 		for (integer dim = 0; dim != NDIM; ++dim) {
-			lobatto_inverse_transform_coefficient[dim][i] = simd_vector(real(0), N3);
+			lobatto_inverse_transform_coefficient[dim][i] = simd_vector(real(0), P3);
 		}
 	}
-	for (integer i = 0; i != N * N * N; ++i) {
-		inverse_transform_coefficient[i] = simd_vector(real(0), N3);
+	for (integer i = 0; i != P * P * P; ++i) {
+		inverse_transform_coefficient[i] = simd_vector(real(0), P3);
 		for (integer fc = 0; fc != NFACE; ++fc) {
 			for (integer dim = 0; dim != NDIM; ++dim) {
-				volume_inverse_transform_coefficient[dim][i] = simd_vector(real(0), N3);
+				volume_inverse_transform_coefficient[dim][i] = simd_vector(real(0), P3);
 			}
 		}
 	}
-	for (integer i = 0; i != N * N; ++i) {
+	for (integer i = 0; i != P * P; ++i) {
 		for (integer fc = 0; fc != NFACE; ++fc) {
-			surface_inverse_transform_coefficient[fc][i] = simd_vector(real(0), N3);
+			surface_inverse_transform_coefficient[fc][i] = simd_vector(real(0), P3);
 		}
 	}
-	for (integer n = 0; n != N; ++n) {
-		const real x = quadrature_point[n];
-		const real dP_dx = dLegendreP_dx(N, x);
-		quadrature_weight[n] = real(2) / ((real(1) - x * x) * dP_dx * dP_dx);
-	}
-	for (integer n = 0; n != N_Lobatto; ++n) {
-		const real x = lobatto_quadrature_point[n];
-		const real P = LegendreP(N_Lobatto - 1, x);
-		lobatto_quadrature_weight[n] = real(2) / (real(N_Lobatto * (N_Lobatto - 1)) * P * P);
+
+}
+
+fourier_legendre::fourier_legendre() {
+
+	static std::atomic<int> initialization_begun(0);
+	static std::atomic<int> initialization_complete(0);
+
+	if (initialization_begun++ != 0) {
+		while (initialization_complete == 0) {
+		}
+		return;
 	}
 
-	printf("Gauss-Legendre Quadrature Points\n");
-	for (integer i = 0; i != N; ++i) {
-		printf("%24.16e %24.16e\n", quadrature_point[i], quadrature_weight[i]);
+	N_Lobatto = std::max(integer((P + 4) / real(2)), integer(2));
+	allocate();
+	char* filename;
+	if (!asprintf(&filename, "basis.%i.%i.dat", int(P), int(LMAX))) {
+		abort();
 	}
+	FILE* test = fopen(filename, "rb");
+	if (test != NULL) {
+		printf("Found transform coefficient file\n");
+		fclose(test);
+		read(filename);
+		free(filename);
+	} else {
 
-	printf("Lobatto-Legendre Quadrature Points\n");
-	for (integer i = 0; i != N_Lobatto; ++i) {
-		printf("%24.16e %24.16e\n", lobatto_quadrature_point[i], lobatto_quadrature_weight[i]);
-	}
+		qpt = LegendreP_roots(P);
+		for (integer gx = 0; gx != P; ++gx) {
+			for (integer gy = 0; gy != P; ++gy) {
+				for (integer gz = 0; gz != P; ++gz) {
+					const integer i = gindex(gx, gy, gz, P);
+					qpt_3d[i][0] = qpt[gx];
+					qpt_3d[i][1] = qpt[gy];
+					qpt_3d[i][2] = qpt[gz];
+				}
+			}
+		}
+		hires_qpt = LegendreP_roots(PHI);
+		auto tmp = dLegendreP_dx_roots(N_Lobatto - 1);
+		lobatto_qpt[0] = -real(1);
+		for (integer qi = 0; qi < N_Lobatto - 2; ++qi) {
+			lobatto_qpt[qi + 1] = tmp[qi];
+		}
+		lobatto_qpt[N_Lobatto - 1] = +real(1);
+		for (integer n = 0; n != P; ++n) {
+			const real x = qpt[n];
+			const real dP_dx = dLegendreP_dx(P, x);
+			qwt[n] = real(2) / ((real(1) - x * x) * dP_dx * dP_dx);
+		}
+		for (integer n = 0; n != PHI; ++n) {
+			const real x = hires_qpt[n];
+			const real dP_dx = dLegendreP_dx(PHI, x);
+			hires_qwt[n] = real(2) / ((real(1) - x * x) * dP_dx * dP_dx);
+		}
+		for (integer n = 0; n != N_Lobatto; ++n) {
+			const real x = lobatto_qpt[n];
+			const real Pn = LegendreP(N_Lobatto - 1, x);
+			lobatto_qwt[n] = real(2) / (real(N_Lobatto * (N_Lobatto - 1)) * Pn * Pn);
+		}
 
-	for (integer gx = 0; gx != N; ++gx) {
-		for (integer gy = 0; gy != N; ++gy) {
-			for (integer gz = 0; gz != N; ++gz) {
-				const integer i = gindex(gx, gy, gz, N);
-				const auto px = LegendreP(quadrature_point[gx], N);
-				const auto py = LegendreP(quadrature_point[gy], N);
-				const auto pz = LegendreP(quadrature_point[gz], N);
-				const auto dpx_dx = dLegendreP_dx(quadrature_point[gx], N);
-				const auto dpy_dy = dLegendreP_dx(quadrature_point[gy], N);
-				const auto dpz_dz = dLegendreP_dx(quadrature_point[gz], N);
-				for (integer l = 0; l != N; ++l) {
-					for (integer m = 0; m != N - l; ++m) {
-						for (integer n = 0; n != N - l - m; ++n) {
-							const auto wx = quadrature_weight[gx] * px[l];
-							const auto wy = quadrature_weight[gy] * py[m];
-							const auto wz = quadrature_weight[gz] * pz[n];
-							const auto dwx_dx = quadrature_weight[gx] * dpx_dx[l];
-							const auto dwy_dy = quadrature_weight[gy] * dpy_dy[m];
-							const auto dwz_dz = quadrature_weight[gz] * dpz_dz[n];
-							const auto nx = LegendreP_norm(l);
-							const auto ny = LegendreP_norm(m);
-							const auto nz = LegendreP_norm(n);
-							const integer p = pindex(l, m, n);
-							inverse_transform_coefficient[i][p] += px[l] * py[m] * pz[n];
-							transform_coefficient[p][i] += (wx * wy * wz) / (nx * ny * nz);
-							for (integer dim = 0; dim != NDIM; ++dim) {
-								volume_inverse_transform_coefficient[dim][i][p] += px[l] * py[m] * pz[n];
+		printf("Gauss-Legendre Quadrature Points\n");
+		for (integer i = 0; i != P; ++i) {
+			printf("%24.16e %24.16e\n", qpt[i], qwt[i]);
+		}
+
+		printf("Lobatto-Legendre Quadrature Points\n");
+		for (integer i = 0; i != N_Lobatto; ++i) {
+			printf("%24.16e %24.16e\n", lobatto_qpt[i], lobatto_qwt[i]);
+		}
+
+		printf("Computing Legendre transform and inverse transform coefficients...\n");
+		for (integer gx = 0; gx != P; ++gx) {
+			for (integer gy = 0; gy != P; ++gy) {
+				for (integer gz = 0; gz != P; ++gz) {
+					const integer i = gindex(gx, gy, gz, P);
+					const auto px = LegendreP(qpt[gx], P);
+					const auto py = LegendreP(qpt[gy], P);
+					const auto pz = LegendreP(qpt[gz], P);
+					const auto dpx_dx = dLegendreP_dx(qpt[gx], P);
+					const auto dpy_dy = dLegendreP_dx(qpt[gy], P);
+					const auto dpz_dz = dLegendreP_dx(qpt[gz], P);
+					for (integer l = 0; l != P; ++l) {
+						for (integer m = 0; m != P - l; ++m) {
+							for (integer n = 0; n != P - l - m; ++n) {
+								const auto wx = qwt[gx] * px[l];
+								const auto wy = qwt[gy] * py[m];
+								const auto wz = qwt[gz] * pz[n];
+								const auto dwx_dx = qwt[gx] * dpx_dx[l];
+								const auto dwy_dy = qwt[gy] * dpy_dy[m];
+								const auto dwz_dz = qwt[gz] * dpz_dz[n];
+								const auto nx = LegendreP_norm(l);
+								const auto ny = LegendreP_norm(m);
+								const auto nz = LegendreP_norm(n);
+								const integer p = pindex(l, m, n);
+								inverse_transform_coefficient[i][p] += px[l] * py[m] * pz[n];
+								transform_coefficient[p][i] += (wx * wy * wz) / (nx * ny * nz);
+								for (integer dim = 0; dim != NDIM; ++dim) {
+									volume_inverse_transform_coefficient[dim][i][p] += px[l] * py[m] * pz[n];
+								}
+								volume_transform_coefficient[XDIM][p][i] += (dwx_dx * wy * wz) / (nx * ny * nz);
+								volume_transform_coefficient[YDIM][p][i] += (wx * dwy_dy * wz) / (nx * ny * nz);
+								volume_transform_coefficient[ZDIM][p][i] += (wx * wy * dwz_dz) / (nx * ny * nz);
 							}
-							volume_transform_coefficient[XDIM][p][i] += (dwx_dx * wy * wz) / (nx * ny * nz);
-							volume_transform_coefficient[YDIM][p][i] += (wx * dwy_dy * wz) / (nx * ny * nz);
-							volume_transform_coefficient[ZDIM][p][i] += (wx * wy * dwz_dz) / (nx * ny * nz);
 						}
 					}
 				}
 			}
 		}
-	}
-	const integer NL = N_Lobatto;
-	const integer NG = N;
-	for (integer g1 = 0; g1 != NL; ++g1) {
-		for (integer g2 = 0; g2 != NG; ++g2) {
-			for (integer g3 = 0; g3 != NG; ++g3) {
-				const integer i1 = (g1 * NG + g2) * NG + g3;
-				const integer i2 = (g2 * NL + g1) * NG + g3;
-				const integer i3 = (g2 * NG + g3) * NL + g1;
-				const auto P1 = LegendreP(lobatto_quadrature_point[g1], N);
-				const auto P2 = LegendreP(quadrature_point[g2], N);
-				const auto P3 = LegendreP(quadrature_point[g3], N);
-				for (integer l1 = 0; l1 != N; ++l1) {
-					for (integer l2 = 0; l2 != N - l1; ++l2) {
-						for (integer l3 = 0; l3 != N - l1 - l2; ++l3) {
-							const integer p1 = pindex(l1, l2, l3);
-							const integer p2 = pindex(l2, l1, l3);
-							const integer p3 = pindex(l2, l3, l1);
-							lobatto_inverse_transform_coefficient[XDIM][i1][p1] += P1[l1] * P2[l2] * P3[l3];
-							lobatto_inverse_transform_coefficient[YDIM][i2][p2] += P1[l1] * P2[l2] * P3[l3];
-							lobatto_inverse_transform_coefficient[ZDIM][i3][p3] += P1[l1] * P2[l2] * P3[l3];
+
+		for (integer g1 = 0; g1 != P; ++g1) {
+			for (integer g2 = 0; g2 != P; ++g2) {
+				const integer i = gindex(g1, g2, P);
+				const auto p1 = LegendreP(qpt[g1], P);
+				const auto p2 = LegendreP(qpt[g2], P);
+				for (integer l1 = 0; l1 != P; ++l1) {
+					for (integer l2 = 0; l2 != P - l1; ++l2) {
+						for (integer n = 0; n != P - l1 - l2; ++n) {
+							const auto w1 = qwt[g1] * p1[l1];
+							const auto w2 = qwt[g2] * p2[l2];
+							const auto n1 = LegendreP_norm(l1);
+							const auto n2 = LegendreP_norm(l2);
+							const real nsgn = n % 2 == 0 ? +real(1) : -real(1);
+							const real nnorm = LegendreP_norm(n);
+							const integer pi = pindex(n, l1, l2);
+							const integer pj = pindex(l1, n, l2);
+							const integer pk = pindex(l1, l2, n);
+							surface_inverse_transform_coefficient[XP][i][pi] += p1[l1] * p2[l2];
+							surface_inverse_transform_coefficient[XM][i][pi] += p1[l1] * p2[l2] * nsgn;
+							surface_inverse_transform_coefficient[YP][i][pj] += p1[l1] * p2[l2];
+							surface_inverse_transform_coefficient[YM][i][pj] += p1[l1] * p2[l2] * nsgn;
+							surface_inverse_transform_coefficient[ZP][i][pk] += p1[l1] * p2[l2];
+							surface_inverse_transform_coefficient[ZM][i][pk] += p1[l1] * p2[l2] * nsgn;
+							surface_transform_coefficient[XP][pi][i] += (w1 * w2) / (n1 * n2 * nnorm);
+							surface_transform_coefficient[XM][pi][i] += (w1 * w2) / (n1 * n2 * nnorm) * nsgn;
+							surface_transform_coefficient[YP][pj][i] += (w1 * w2) / (n1 * n2 * nnorm);
+							surface_transform_coefficient[YM][pj][i] += (w1 * w2) / (n1 * n2 * nnorm) * nsgn;
+							surface_transform_coefficient[ZP][pk][i] += (w1 * w2) / (n1 * n2 * nnorm);
+							surface_transform_coefficient[ZM][pk][i] += (w1 * w2) / (n1 * n2 * nnorm) * nsgn;
 						}
 					}
 				}
 			}
 		}
-	}
 
-	for (integer g1 = 0; g1 != N; ++g1) {
-		for (integer g2 = 0; g2 != N; ++g2) {
-			const integer i = gindex(g1, g2, N);
-			const auto p1 = LegendreP(quadrature_point[g1], N);
-			const auto p2 = LegendreP(quadrature_point[g2], N);
-			for (integer l1 = 0; l1 != N; ++l1) {
-				for (integer l2 = 0; l2 != N - l1; ++l2) {
-					for (integer n = 0; n != N - l1 - l2; ++n) {
-						const auto w1 = quadrature_weight[g1] * p1[l1];
-						const auto w2 = quadrature_weight[g2] * p2[l2];
-						const auto n1 = LegendreP_norm(l1);
-						const auto n2 = LegendreP_norm(l2);
-						const real nsgn = n % 2 == 0 ? +real(1) : -real(1);
-						const real nnorm = LegendreP_norm(n);
-						const integer pi = pindex(n, l1, l2);
-						const integer pj = pindex(l1, n, l2);
-						const integer pk = pindex(l1, l2, n);
-						surface_inverse_transform_coefficient[XP][i][pi] += p1[l1] * p2[l2];
-						surface_inverse_transform_coefficient[XM][i][pi] += p1[l1] * p2[l2] * nsgn;
-						surface_inverse_transform_coefficient[YP][i][pj] += p1[l1] * p2[l2];
-						surface_inverse_transform_coefficient[YM][i][pj] += p1[l1] * p2[l2] * nsgn;
-						surface_inverse_transform_coefficient[ZP][i][pk] += p1[l1] * p2[l2];
-						surface_inverse_transform_coefficient[ZM][i][pk] += p1[l1] * p2[l2] * nsgn;
-						surface_transform_coefficient[XP][pi][i] += (w1 * w2) / (n1 * n2 * nnorm);
-						surface_transform_coefficient[XM][pi][i] += (w1 * w2) / (n1 * n2 * nnorm) * nsgn;
-						surface_transform_coefficient[YP][pj][i] += (w1 * w2) / (n1 * n2 * nnorm);
-						surface_transform_coefficient[YM][pj][i] += (w1 * w2) / (n1 * n2 * nnorm) * nsgn;
-						surface_transform_coefficient[ZP][pk][i] += (w1 * w2) / (n1 * n2 * nnorm);
-						surface_transform_coefficient[ZM][pk][i] += (w1 * w2) / (n1 * n2 * nnorm) * nsgn;
+		const integer NL = N_Lobatto;
+		const integer NG = P;
+		printf("Computing Lobatto inverse transforms...\n");
+		for (integer g1 = 0; g1 != NL; ++g1) {
+			for (integer g2 = 0; g2 != NG; ++g2) {
+				for (integer g3 = 0; g3 != NG; ++g3) {
+					const integer i1 = (g1 * NG + g2) * NG + g3;
+					const integer i2 = (g2 * NL + g1) * NG + g3;
+					const integer i3 = (g2 * NG + g3) * NL + g1;
+					const auto P1 = LegendreP(lobatto_qpt[g1], P);
+					const auto P2 = LegendreP(qpt[g2], P);
+					const auto P3 = LegendreP(qpt[g3], P);
+					for (integer l1 = 0; l1 != P; ++l1) {
+						for (integer l2 = 0; l2 != P - l1; ++l2) {
+							for (integer l3 = 0; l3 != P - l1 - l2; ++l3) {
+								const integer p1 = pindex(l1, l2, l3);
+								const integer p2 = pindex(l2, l1, l3);
+								const integer p3 = pindex(l2, l3, l1);
+								lobatto_inverse_transform_coefficient[XDIM][i1][p1] += P1[l1] * P2[l2] * P3[l3];
+								lobatto_inverse_transform_coefficient[YDIM][i2][p2] += P1[l1] * P2[l2] * P3[l3];
+								lobatto_inverse_transform_coefficient[ZDIM][i3][p3] += P1[l1] * P2[l2] * P3[l3];
+							}
+						}
 					}
 				}
 			}
 		}
-	}
-	/*for(integer dim = 0; dim != NFACE; ++dim ){
-	for (integer gx = 0; gx != N; ++gx) {
-		for (integer gy = 0; gy != N; ++gy) {
-				printf( "\n");
-				for( integer p = 0; p != 4; ++p)
-					printf( "%16.7e ", surface_transform_coefficient[dim][p][gindex(gx,gy,N)]);
-				printf( "\n");
-		}
-	}
-	printf( "\n");
-	}*/
-	quadrature_point_3d.resize(N * N * N);
-	for (integer gx = 0; gx != N; ++gx) {
-		for (integer gy = 0; gy != N; ++gy) {
-			for (integer gz = 0; gz != N; ++gz) {
-				const integer i = gindex(gx, gy, gz, N);
-				quadrature_point_3d[i][0] = quadrature_point[gx];
-				quadrature_point_3d[i][1] = quadrature_point[gy];
-				quadrature_point_3d[i][2] = quadrature_point[gz];
+
+		printf("Computing legendre restrict and prolong coefficients\n...");
+		for (integer ci = 0; ci != NVERTEX; ci++) {
+			const integer xi = (ci >> 0) & 1;
+			const integer yi = (ci >> 1) & 1;
+			const integer zi = (ci >> 2) & 1;
+			for (integer gx = 0; gx != PHI; ++gx) {
+				for (integer gy = 0; gy != PHI; ++gy) {
+					for (integer gz = 0; gz != PHI; ++gz) {
+						const real xc = hires_qpt[gx];
+						const real yc = hires_qpt[gy];
+						const real zc = hires_qpt[gz];
+						const real xp = xc / real(2) + real(xi) - real(1) / real(2);
+						const real yp = yc / real(2) + real(yi) - real(1) / real(2);
+						const real zp = zc / real(2) + real(zi) - real(1) / real(2);
+						const auto pcx = LegendreP(xc, P);
+						const auto pcy = LegendreP(yc, P);
+						const auto pcz = LegendreP(zc, P);
+						const auto ppx = LegendreP(xp, P);
+						const auto ppy = LegendreP(yp, P);
+						const auto ppz = LegendreP(zp, P);
+						for (integer lc = 0; lc != P; ++lc) {
+							for (integer mc = 0; mc != P - lc; ++mc) {
+								for (integer nc = 0; nc != P - lc - mc; ++nc) {
+									for (integer lp = 0; lp != P; ++lp) {
+										for (integer mp = 0; mp != P - lp; ++mp) {
+											for (integer np = 0; np != P - lp - mp; ++np) {
+												const real wpx = hires_qwt[gx] / (real(NVERTEX) * LegendreP_norm(lp));
+												const real wpy = hires_qwt[gy] / (real(NVERTEX) * LegendreP_norm(mp));
+												const real wpz = hires_qwt[gz] / (real(NVERTEX) * LegendreP_norm(np));
+												const real wcx = hires_qwt[gx] / LegendreP_norm(lc);
+												const real wcy = hires_qwt[gy] / LegendreP_norm(mc);
+												const real wcz = hires_qwt[gz] / LegendreP_norm(nc);
+												const integer pp = pindex(lp, mp, np);
+												const integer pc = pindex(lc, mc, nc);
+												restrict_coefficients[pp][ci][pc] += pcx[lc] * pcy[mc] * pcz[nc]
+														* ppx[lp] * ppy[mp] * ppz[np] * wpx * wpy * wpz;
+												prolong_coefficients[pc][ci][pp] += pcx[lc] * pcy[mc] * pcz[nc]
+														* ppx[lp] * ppy[mp] * ppz[np] * wcx * wcy * wcz;
+											}
+										}
+									}
+								}
+							}
+						}
+					}
+				}
 			}
 		}
+
+		printf("Computing gravity interaction coefficients\n");
+		for (integer di = -DNMAX; di <= DNMAX; ++di) {
+			for (integer dj = -DNMAX; dj <= DNMAX; ++dj) {
+				printf("	%i %i %i-%i\n", int(di), int(dj), int(-DNMAX), int(DNMAX));
+				for (integer dk = -DNMAX; dk <= DNMAX; ++dk) {
+					if (std::abs(di) + std::abs(dj) + std::abs(dk) != 0) {
+						const integer iii = ((di + DNMAX) * (2 * DNMAX + 1) + (dj + DNMAX)) * (2 * DNMAX + 1)
+								+ (dk + DNMAX);
+						for (integer g1x = 0; g1x != PHI; ++g1x) {
+							const auto P1x = LegendreP(hires_qpt[g1x], P);
+							const real w1x = hires_qwt[g1x];
+							for (integer g1y = 0; g1y != PHI; ++g1y) {
+								const auto P1y = LegendreP(hires_qpt[g1y], P);
+								const real w1y = hires_qwt[g1y];
+								for (integer g1z = 0; g1z != PHI; ++g1z) {
+									const auto P1z = LegendreP(hires_qpt[g1z], P);
+									const real w1z = hires_qwt[g1z];
+									const real w1 = (w1x * w1y * w1z);
+									for (integer g2x = 0; g2x != PHI; ++g2x) {
+										const auto P2x = LegendreP(hires_qpt[g2x], P);
+										const real w2x = hires_qwt[g2x];
+										const real dx = real(2) * real(di) + hires_qpt[g1x] - hires_qpt[g2x];
+										for (integer g2y = 0; g2y != PHI; ++g2y) {
+											const auto P2y = LegendreP(hires_qpt[g2y], P);
+											const real w2y = hires_qwt[g2y];
+											const real dy = real(2) * real(dj) + hires_qpt[g1y] - hires_qpt[g2y];
+											for (integer g2z = 0; g2z != PHI; ++g2z) {
+												const auto P2z = LegendreP(hires_qpt[g2z], P);
+												const real w2z = hires_qwt[g2z];
+												const real w2 = (w2x * w2y * w2z);
+												const real dz = real(2) * real(dk) + hires_qpt[g1z] - hires_qpt[g2z];
+												const real kernel = real(1) / std::sqrt(dx * dx + dy * dy + dz * dz);
+												for (integer l1 = 0; l1 != P; ++l1) {
+													for (integer m1 = 0; m1 != P - l1; ++m1) {
+														for (integer n1 = 0; n1 != P - l1 - m1; ++n1) {
+															for (integer l2 = 0; l2 != P; ++l2) {
+																const real p1 = (P1x[l1] * P1y[m1] * P1z[n1]);
+																const real n2x = LegendreP_norm(l2);
+																for (integer m2 = 0; m2 != P - l2; ++m2) {
+																	const real n2y = LegendreP_norm(m2);
+																	for (integer n2 = 0; n2 != P - l2 - m2; ++n2) {
+																		const real n2z = LegendreP_norm(n2);
+																		P2P[iii][pindex(l2, m2, n2)][pindex(l1, m1, n1)] +=
+																				((p1 * (P2x[l2] * P2y[m2] * P2z[n2]))
+																						* (w2 * w1) * (n2x * n2y * n2z))
+																						* kernel;
+																	}
+																}
+															}
+														}
+													}
+												}
+											}
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
+		exafmm fmm;
+
+		const auto qpt = quadrature_points();
+
+		printf("Computing Legendre-to-Spherical transform coefficients...\n");
+		for (integer ppp = 0; ppp != P3; ++ppp) {
+			std::valarray<real> rho_p(real(0), P3);
+			rho_p[ppp] = real(1);
+			auto rho_h = inverse_transform(rho_p);
+			for (integer g = 0; g != G3; ++g) {
+				auto M = fmm.P2M(qpt[g]);
+				for (integer l = 0; l != LMAX; ++l) {
+					for (integer m = 0; m != l; ++m) {
+						rho_2M[l * l + l + m][ppp] += M[l * (l + 1) / 2 + m].real();
+						rho_2M[l * l + l - m][ppp] += M[l * (l + 1) / 2 + m].imag();
+					}
+				}
+			}
+		}
+
+		printf("Computing Spherical-to-Legendre transform coefficients...\n");
+		for (integer l = 0; l != LMAX; ++l) {
+			for (integer m = -l; m != l; ++m) {
+				std::valarray<complex> L(real(0), L2);
+				if (m >= 0) {
+					L[l * (l + 1) / 2 + m].real(1);
+				} else {
+					L[l * (l + 1) / 2 + m].imag(1);
+				}
+				std::valarray<real> phi_h(real(0), G3);
+				std::valarray<real> gx_h(real(0), G3);
+				std::valarray<real> gy_h(real(0), G3);
+				std::valarray<real> gz_h(real(0), G3);
+				for (integer g = 0; g != G3; ++g) {
+					auto g4 = fmm.L2P(L, qpt[g]);
+					phi_h[g] = g4[0];
+					gx_h[g] = g4[1];
+					gy_h[g] = g4[2];
+					gz_h[g] = g4[3];
+				}
+				const integer i = l * (l + 1) + m;
+				const auto phi_p = transform(phi_h);
+				const auto gx_p = transform(gx_h);
+				const auto gy_p = transform(gy_h);
+				const auto gz_p = transform(gz_h);
+				for (integer ppp = 0; ppp != P3; ++ppp) {
+					L2_phi[ppp][i] += phi_p[ppp];
+					L2_gx[ppp][i] += gx_h[ppp];
+					L2_gy[ppp][i] += gy_h[ppp];
+					L2_gz[ppp][i] += gz_h[ppp];
+				}
+			}
+		}
+
+		printf("Computing spherical restrict and prolong coefficients...\n");
+		for (integer ci = 0; ci != NVERTEX; ++ci) {
+			const std::array<real, NDIM> dist = { real(2 * ((ci >> 0) & 1) - 1), real(2 * ((ci >> 1) & 1) - 1), real(
+					2 * ((ci >> 2) & 1) - 1) };
+			for (integer l = 0; l != LMAX; ++l) {
+				for (integer m = -l; m != +l; ++m) {
+					std::valarray<complex> A(complex(0, 0), LMAX * (LMAX + 1) / 2);
+					const integer i_complex = l * (l + 1) / 2 + m;
+					const integer i_real = l * (l + 1) + m;
+					if (m >= 0) {
+						A[i_complex].real(1);
+					} else {
+						A[i_complex].imag(1);
+					}
+					const auto m2m = fmm.M2M(A, dist);
+					const auto l2l = fmm.L2L(A, dist);
+					for (integer j = 0; j != LMAX; ++j) {
+						for (integer k = 0; k != j; ++k) {
+							const integer jk = j * (j + 1) / 2 + k;
+							const integer jkp = j * j + j + k;
+							const integer jkm = j * j + j - k;
+							M2M[ci][jkp][i_real] += m2m[jk].real();
+							L2L[ci][jkp][i_real] += l2l[jk].real();
+							if (jkp != jkm) {
+								M2M[ci][jkm][i_real] += m2m[jk].imag();
+								L2L[ci][jkm][i_real] += l2l[jk].imag();
+							}
+						}
+					}
+
+				}
+			}
+		}
+
+		printf("Computing spherical multipole interactions...\n");
+		std::array<real, NDIM> dist;
+		for (integer di = -DNMAX; di != DNMAX; ++di) {
+			dist[0] = real(di);
+			for (integer dj = -DNMAX; dj != DNMAX; ++dj) {
+				printf("	%i %i %i-%i\n", int(di), int(dj), int(-DNMAX), int(DNMAX));
+				dist[1] = real(dj);
+				for (integer dk = -DNMAX; dk != DNMAX; ++dk) {
+					if (std::abs(di) + std::abs(dj) + std::abs(dk) != 0) {
+						dist[2] = real(dk);
+						const integer index = ((di + DNMAX) * (2 * DNMAX + 1) + (dj + DNMAX)) * (2 * DNMAX + 1)
+								+ (dk + DNMAX);
+						for (integer l = 0; l != LMAX; ++l) {
+							for (integer m = -l; m != +l; ++m) {
+								std::valarray<complex> A(complex(0, 0), LMAX * (LMAX + 1) / 2);
+								const integer i_complex = l * (l + 1) / 2 + m;
+								const integer i_real = l * (l + 1) + m;
+								if (m >= 0) {
+									A[i_complex].real(1);
+								} else {
+									A[i_complex].imag(1);
+								}
+								const auto m2l = fmm.M2L(A, dist);
+								for (integer j = 0; j != LMAX; ++j) {
+									for (integer k = 0; k != j; ++k) {
+										const integer jk = j * (j + 1) / 2 + k;
+										const integer jkp = j * j + j + k;
+										const integer jkm = j * j + j - k;
+										M2L[index][jkp][i_real] += m2l[jk].real();
+										if (jkp != jkm) {
+											M2L[index][jkm][i_real] += m2l[jk].imag();
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+		write(filename);
+		free(filename);
 	}
+	++initialization_complete;
 }
 
-integer fourier_legendre::lobatto_point_count() const {
-	return N * N * N_Lobatto;
+simd_vector fourier_legendre::prolong(const simd_vector& up_p, integer ci) {
+	simd_vector up_c(P3);
+	for (integer ppp = 0; ppp != P3; ++ppp) {
+		up_c[ppp] = (prolong_coefficients[ppp][ci] * up_p).sum();
+	}
+	return up_c;
 }
 
-real fourier_legendre::lobatto_edge_weight() const {
-	return lobatto_quadrature_weight[0];
+simd_vector fourier_legendre::_restrict(const simd_vector& up_c, integer ci) {
+	simd_vector up_p(P3);
+	for (integer ppp = 0; ppp != P3; ++ppp) {
+		up_p[ppp] = (prolong_coefficients[ppp][ci] * up_c).sum();
+	}
+	return up_p;
 }
 
-simd_vector fourier_legendre::transform(const simd_vector& U_h) const {
-	simd_vector U_p(N3);
-	for (integer p = 0; p != N3; ++p) {
+integer fourier_legendre::lobatto_point_count() {
+	return P * P * N_Lobatto;
+}
+
+real fourier_legendre::lobatto_edge_weight() {
+	return lobatto_qwt[0];
+}
+
+simd_vector fourier_legendre::transform(const simd_vector& U_h) {
+	simd_vector U_p(P3);
+	for (integer p = 0; p != P3; ++p) {
 		U_p[p] = (transform_coefficient[p] * U_h).sum();
 	}
 	return U_p;
 }
 
-simd_vector fourier_legendre::inverse_transform(const simd_vector& U_p) const {
-	simd_vector U_h(N * N * N);
-	for (integer i = 0; i != N * N * N; ++i) {
+simd_vector fourier_legendre::inverse_transform(const simd_vector& U_p) {
+	simd_vector U_h(P * P * P);
+	for (integer i = 0; i != P * P * P; ++i) {
 		U_h[i] = (inverse_transform_coefficient[i] * U_p).sum();
 	}
 	return U_h;
 }
 
-simd_vector fourier_legendre::lobatto_inverse_transform(const simd_vector& U_p, dimension dim) const {
-	simd_vector U_h(N * N * N_Lobatto);
-	for (integer i = 0; i != N * N * N_Lobatto; ++i) {
+simd_vector fourier_legendre::lobatto_inverse_transform(const simd_vector& U_p, dimension dim) {
+	simd_vector U_h(P * P * N_Lobatto);
+	for (integer i = 0; i != P * P * N_Lobatto; ++i) {
 		U_h[i] = (lobatto_inverse_transform_coefficient[dim][i] * U_p).sum();
 	}
 	return U_h;
 }
 
-simd_vector fourier_legendre::volume_transform(dimension dim, const simd_vector& U_h) const {
-	simd_vector U_p(N3);
-	for (integer p = 0; p != N3; ++p) {
+simd_vector fourier_legendre::volume_transform(dimension dim, const simd_vector& U_h) {
+	simd_vector U_p(P3);
+	for (integer p = 0; p != P3; ++p) {
 		U_p[p] = (volume_transform_coefficient[dim][p] * U_h).sum();
 	}
 	return U_p;
 }
 
-simd_vector fourier_legendre::volume_inverse_transform(dimension dim, const simd_vector& U_p) const {
-	simd_vector U_h(N * N * N);
-	for (integer i = 0; i != N * N * N; ++i) {
+simd_vector fourier_legendre::volume_inverse_transform(dimension dim, const simd_vector& U_p) {
+	simd_vector U_h(P * P * P);
+	for (integer i = 0; i != P * P * P; ++i) {
 		U_h[i] = (volume_inverse_transform_coefficient[dim][i] * U_p).sum();
 	}
 	return U_h;
 }
 
-simd_vector fourier_legendre::surface_transform(face fc, const simd_vector& U_h) const {
-	simd_vector U_p(N3);
-	for (integer p = 0; p != N3; ++p) {
+simd_vector fourier_legendre::surface_transform(face fc, const simd_vector& U_h) {
+	simd_vector U_p(P3);
+	for (integer p = 0; p != P3; ++p) {
 		U_p[p] = (surface_transform_coefficient[fc][p] * U_h).sum();
 	}
 	return U_p;
 }
 
-simd_vector fourier_legendre::surface_inverse_transform(face fc, const simd_vector& U_p) const {
-	simd_vector U_h(N * N);
-	for (integer i = 0; i != N * N; ++i) {
+simd_vector fourier_legendre::surface_inverse_transform(face fc, const simd_vector& U_p) {
+	simd_vector U_h(P * P);
+	for (integer i = 0; i != P * P; ++i) {
 		U_h[i] = (surface_inverse_transform_coefficient[fc][i] * U_p).sum();
 	}
 	return U_h;
+}
+
+simd_vector fourier_legendre::p2p_transform(integer i, integer j, integer k, const simd_vector& p_in) {
+	simd_vector p_out(real(0), P3);
+	const integer index = (i + DNMAX) * (2 * DNMAX + 1) * (2 * DNMAX + 1) + (j + DNMAX) * (2 * DNMAX + 1) + (k + DNMAX);
+	for (integer p = 0; p != P3; ++p) {
+		p_out[p] += (P2P[index][p] * p_in).sum();
+	}
+	return p_out;
+}
+
+simd_vector fourier_legendre::m2l_transform(integer i, integer j, integer k, const simd_vector& p_in) {
+	simd_vector p_out(real(0), L2);
+	const integer index = (i + DNMAX) * (2 * DNMAX + 1) * (2 * DNMAX + 1) + (j + DNMAX) * (2 * DNMAX + 1) + (k + DNMAX);
+	for (integer p = 0; p != L2; ++p) {
+		p_out[p] += (M2L[index][p] * p_in).sum();
+	}
+	return p_out;
+}
+
+simd_vector fourier_legendre::m2m_transform(integer ci, const simd_vector& m_in) {
+	simd_vector m_out(real(0), L2);
+	for (integer p = 0; p != L2; ++p) {
+		m_out[p] += (M2M[ci][p] * m_in).sum();
+	}
+	return m_out;
+}
+
+simd_vector fourier_legendre::l2l_transform(integer ci, const simd_vector& l_in) {
+	simd_vector l_out(real(0), L2);
+	for (integer p = 0; p != L2; ++p) {
+		l_out[p] += (L2L[ci][p] * l_in).sum();
+	}
+	return l_out;
+}
+
+simd_vector fourier_legendre::l2p_transform( const simd_vector& l_in) {
+	simd_vector phi_out(P3);
+	for (integer p = 0; p != P3; ++p) {
+		phi_out[p] = (L2_phi[p] * l_in).sum();
+	}
+	return phi_out;
+}
+
+simd_vector fourier_legendre::p2m_transform(const simd_vector& p_in) {
+	simd_vector m_out(L2);
+	for (integer l = 0; l != L2; ++l) {
+		m_out[l] = (rho_2M[l] * p_in).sum();
+	}
+	return m_out;
+}
+
+void fourier_legendre::write(const char* filename) {
+	std::ofstream ofs(filename);
+	boost::archive::binary_oarchive arc(ofs);
+	arc << qpt;
+	arc << hires_qwt;
+	arc << hires_qpt;
+	arc << qwt;
+	arc << lobatto_qpt;
+	arc << lobatto_qwt;
+	arc << qpt_3d;
+	arc << transform_coefficient;
+	arc << inverse_transform_coefficient;
+	arc << lobatto_inverse_transform_coefficient;
+	arc << volume_transform_coefficient;
+	arc << volume_inverse_transform_coefficient;
+	arc << surface_transform_coefficient;
+	arc << surface_inverse_transform_coefficient;
+	arc << restrict_coefficients;
+	arc << prolong_coefficients;
+	arc << P2P;
+	arc << rho_2M;
+	arc << L2_phi;
+	arc << L2_gx;
+	arc << L2_gy;
+	arc << L2_gz;
+	arc << M2M;
+	arc << M2L;
+	arc << L2L;
+	ofs.close();
+}
+
+void fourier_legendre::read(const char* filename) {
+	std::ifstream ifs(filename);
+	boost::archive::binary_iarchive arc(ifs);
+	arc >> qpt;
+	arc >> hires_qwt;
+	arc >> hires_qpt;
+	arc >> qwt;
+	arc >> lobatto_qpt;
+	arc >> lobatto_qwt;
+	arc >> qpt_3d;
+	arc >> transform_coefficient;
+	arc >> inverse_transform_coefficient;
+	arc >> lobatto_inverse_transform_coefficient;
+	arc >> volume_transform_coefficient;
+	arc >> volume_inverse_transform_coefficient;
+	arc >> surface_transform_coefficient;
+	arc >> surface_inverse_transform_coefficient;
+	arc >> restrict_coefficients;
+	arc >> prolong_coefficients;
+	arc >> P2P;
+	arc >> rho_2M;
+	arc >> L2_phi;
+	arc >> L2_gx;
+	arc >> L2_gy;
+	arc >> L2_gz;
+	arc >> M2M;
+	arc >> M2L;
+	arc >> L2L;
+	ifs.close();
 }
 
