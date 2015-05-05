@@ -11,7 +11,7 @@
 #include <atomic>
 #include "exafmm.hpp"
 
-integer fourier_legendre::PHI = 2 * P;
+integer fourier_legendre::PHI = P + 1;
 integer fourier_legendre::PHI3 = (PHI + 2) * (PHI + 1) * PHI / 6;
 integer fourier_legendre::N_Lobatto;
 std::vector<std::vector<simd_vector>> fourier_legendre::P2P;
@@ -33,12 +33,11 @@ std::vector<std::vector<simd_vector>> fourier_legendre::restrict_coefficients;
 std::vector<std::vector<simd_vector>> fourier_legendre::prolong_coefficients;
 std::vector<simd_vector> fourier_legendre::rho_2M;
 std::vector<simd_vector> fourier_legendre::L2_phi;
-std::vector<simd_vector> fourier_legendre::L2_gx;
-std::vector<simd_vector> fourier_legendre::L2_gy;
-std::vector<simd_vector> fourier_legendre::L2_gz;
 std::vector<std::vector<simd_vector>> fourier_legendre::M2M;
 std::vector<std::vector<simd_vector>> fourier_legendre::M2L;
 std::vector<std::vector<simd_vector>> fourier_legendre::L2L;
+simd_vector fourier_legendre::rpow_l;
+simd_vector fourier_legendre::rpow_p;
 
 integer fourier_legendre::pindex(integer l, integer m, integer n) {
 	const integer lmn = l + m + n;
@@ -67,9 +66,6 @@ void fourier_legendre::allocate() {
 	const integer ML_size = (2 * DNMAX + 1) * (2 * DNMAX + 1) * (2 * DNMAX + 1);
 	rho_2M.resize(L2, simd_vector(real(0), P3));
 	L2_phi.resize(P3, simd_vector(real(0), L2));
-	L2_gx.resize(P3, simd_vector(real(0), L2));
-	L2_gy.resize(P3, simd_vector(real(0), L2));
-	L2_gz.resize(P3, simd_vector(real(0), L2));
 	M2M.resize(NVERTEX, std::vector<simd_vector>(L2, simd_vector(real(0), L2)));
 	L2L.resize(NVERTEX, std::vector<simd_vector>(L2, simd_vector(real(0), L2)));
 	M2L.resize(ML_size, std::vector<simd_vector>(L2, simd_vector(real(0), L2)));
@@ -134,6 +130,22 @@ fourier_legendre::fourier_legendre() {
 
 	N_Lobatto = std::max(integer((P + 4) / real(2)), integer(2));
 	allocate();
+
+	rpow_l.resize(L2);
+	rpow_p.resize(P3);
+	for (integer l = 0; l != LMAX; ++l) {
+		for (integer m = -l; m <= l; ++m) {
+			rpow_l[l * l + l + m] = real(l);
+		}
+	}
+	for (integer l = 0; l != P; ++l) {
+		for (integer m = 0; m != P - l; ++m) {
+			for (integer n = 0; n != P - l - m; ++n) {
+				rpow_p[pindex(l, m, n)] = real(l + m + n);
+			}
+		}
+	}
+
 	char* filename;
 	if (!asprintf(&filename, "basis.%i.%i.dat", int(P), int(LMAX))) {
 		abort();
@@ -292,7 +304,7 @@ fourier_legendre::fourier_legendre() {
 			}
 		}
 
-		printf("Computing legendre restrict and prolong coefficients\n...");
+		printf("Computing legendre restrict and prolong coefficients...\n");
 		for (integer ci = 0; ci != NVERTEX; ci++) {
 			const integer xi = (ci >> 0) & 1;
 			const integer yi = (ci >> 1) & 1;
@@ -341,141 +353,75 @@ fourier_legendre::fourier_legendre() {
 			}
 		}
 
-		printf("Computing gravity interaction coefficients\n");
-		for (integer di = -DNMAX; di <= DNMAX; ++di) {
-			for (integer dj = -DNMAX; dj <= DNMAX; ++dj) {
-				printf("	%i %i %i-%i\n", int(di), int(dj), int(-DNMAX), int(DNMAX));
-				for (integer dk = -DNMAX; dk <= DNMAX; ++dk) {
-					if (std::abs(di) + std::abs(dj) + std::abs(dk) != 0) {
-						const integer iii = ((di + DNMAX) * (2 * DNMAX + 1) + (dj + DNMAX)) * (2 * DNMAX + 1)
-								+ (dk + DNMAX);
-						for (integer g1x = 0; g1x != PHI; ++g1x) {
-							const auto P1x = LegendreP(hires_qpt[g1x], P);
-							const real w1x = hires_qwt[g1x];
-							for (integer g1y = 0; g1y != PHI; ++g1y) {
-								const auto P1y = LegendreP(hires_qpt[g1y], P);
-								const real w1y = hires_qwt[g1y];
-								for (integer g1z = 0; g1z != PHI; ++g1z) {
-									const auto P1z = LegendreP(hires_qpt[g1z], P);
-									const real w1z = hires_qwt[g1z];
-									const real w1 = (w1x * w1y * w1z);
-									for (integer g2x = 0; g2x != PHI; ++g2x) {
-										const auto P2x = LegendreP(hires_qpt[g2x], P);
-										const real w2x = hires_qwt[g2x];
-										const real dx = real(2) * real(di) + hires_qpt[g1x] - hires_qpt[g2x];
-										for (integer g2y = 0; g2y != PHI; ++g2y) {
-											const auto P2y = LegendreP(hires_qpt[g2y], P);
-											const real w2y = hires_qwt[g2y];
-											const real dy = real(2) * real(dj) + hires_qpt[g1y] - hires_qpt[g2y];
-											for (integer g2z = 0; g2z != PHI; ++g2z) {
-												const auto P2z = LegendreP(hires_qpt[g2z], P);
-												const real w2z = hires_qwt[g2z];
-												const real w2 = (w2x * w2y * w2z);
-												const real dz = real(2) * real(dk) + hires_qpt[g1z] - hires_qpt[g2z];
-												const real kernel = real(1) / std::sqrt(dx * dx + dy * dy + dz * dz);
-												for (integer l1 = 0; l1 != P; ++l1) {
-													for (integer m1 = 0; m1 != P - l1; ++m1) {
-														for (integer n1 = 0; n1 != P - l1 - m1; ++n1) {
-															for (integer l2 = 0; l2 != P; ++l2) {
-																const real p1 = (P1x[l1] * P1y[m1] * P1z[n1]);
-																const real n2x = LegendreP_norm(l2);
-																for (integer m2 = 0; m2 != P - l2; ++m2) {
-																	const real n2y = LegendreP_norm(m2);
-																	for (integer n2 = 0; n2 != P - l2 - m2; ++n2) {
-																		const real n2z = LegendreP_norm(n2);
-																		P2P[iii][pindex(l2, m2, n2)][pindex(l1, m1, n1)] +=
-																				((p1 * (P2x[l2] * P2y[m2] * P2z[n2]))
-																						* (w2 * w1) * (n2x * n2y * n2z))
-																						* kernel;
-																	}
-																}
-															}
-														}
-													}
-												}
-											}
-										}
-									}
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-
 		exafmm fmm;
-
-		const auto qpt = quadrature_points();
 
 		printf("Computing Legendre-to-Spherical transform coefficients...\n");
 		for (integer ppp = 0; ppp != P3; ++ppp) {
 			std::valarray<real> rho_p(real(0), P3);
 			rho_p[ppp] = real(1);
 			auto rho_h = inverse_transform(rho_p);
-			for (integer g = 0; g != G3; ++g) {
-				auto M = fmm.P2M(qpt[g]);
-				for (integer l = 0; l != LMAX; ++l) {
-					for (integer m = 0; m != l; ++m) {
-						rho_2M[l * l + l + m][ppp] += M[l * (l + 1) / 2 + m].real();
-						rho_2M[l * l + l - m][ppp] += M[l * (l + 1) / 2 + m].imag();
+			integer g = 0;
+			for (integer g1 = 0; g1 != P; ++g1) {
+				for (integer g2 = 0; g2 != P; ++g2) {
+					for (integer g3 = 0; g3 != P; ++g3) {
+						const real wt = qwt[g1] * qwt[g2] * qwt[g3];
+						auto M = fmm.P2M( { -qpt_3d[g][0], -qpt_3d[g][1], -qpt_3d[g][2] });
+						for (integer l = 0; l != LMAX; ++l) {
+							for (integer m = 0; m <= l; ++m) {
+								rho_2M[l * l + l + m][ppp] += M[l * (l + 1) / 2 + m].real() * rho_h[g] * wt;
+								rho_2M[l * l + l - m][ppp] += M[l * (l + 1) / 2 + m].imag() * rho_h[g] * wt;
+							}
+						}
+						++g;
 					}
 				}
 			}
 		}
-
 		printf("Computing Spherical-to-Legendre transform coefficients...\n");
 		for (integer l = 0; l != LMAX; ++l) {
-			for (integer m = -l; m != l; ++m) {
-				std::valarray<complex> L(real(0), L2);
+			for (integer m = -l; m <= +l; ++m) {
+				std::valarray<complex> L(complex(0, 0), L2);
 				if (m >= 0) {
 					L[l * (l + 1) / 2 + m].real(1);
 				} else {
-					L[l * (l + 1) / 2 + m].imag(1);
+					L[l * (l + 1) / 2 - m].imag(1);
 				}
 				std::valarray<real> phi_h(real(0), G3);
-				std::valarray<real> gx_h(real(0), G3);
-				std::valarray<real> gy_h(real(0), G3);
-				std::valarray<real> gz_h(real(0), G3);
 				for (integer g = 0; g != G3; ++g) {
-					auto g4 = fmm.L2P(L, qpt[g]);
-					phi_h[g] = g4[0];
-					gx_h[g] = g4[1];
-					gy_h[g] = g4[2];
-					gz_h[g] = g4[3];
+					phi_h[g] = fmm.L2P(L, qpt_3d[g]);
 				}
 				const integer i = l * (l + 1) + m;
 				const auto phi_p = transform(phi_h);
-				const auto gx_p = transform(gx_h);
-				const auto gy_p = transform(gy_h);
-				const auto gz_p = transform(gz_h);
 				for (integer ppp = 0; ppp != P3; ++ppp) {
 					L2_phi[ppp][i] += phi_p[ppp];
-					L2_gx[ppp][i] += gx_h[ppp];
-					L2_gy[ppp][i] += gy_h[ppp];
-					L2_gz[ppp][i] += gz_h[ppp];
 				}
 			}
 		}
 
 		printf("Computing spherical restrict and prolong coefficients...\n");
 		for (integer ci = 0; ci != NVERTEX; ++ci) {
-			const std::array<real, NDIM> dist = { real(2 * ((ci >> 0) & 1) - 1), real(2 * ((ci >> 1) & 1) - 1), real(
+			std::array<real, NDIM> dist_m = { real(2 * ((ci >> 0) & 1) - 1), real(2 * ((ci >> 1) & 1) - 1), real(
 					2 * ((ci >> 2) & 1) - 1) };
+			std::array<real, NDIM> dist_l = { real(2 * ((ci >> 0) & 1) - 1), real(2 * ((ci >> 1) & 1) - 1), real(
+					2 * ((ci >> 2) & 1) - 1) };
+			for (integer d = 0; d != NDIM; ++d) {
+				dist_m[d] *= -real(1);
+				//			dist_l[d] /= +real(2);
+			}
 			for (integer l = 0; l != LMAX; ++l) {
-				for (integer m = -l; m != +l; ++m) {
+				for (integer m = -l; m <= +l; ++m) {
 					std::valarray<complex> A(complex(0, 0), LMAX * (LMAX + 1) / 2);
-					const integer i_complex = l * (l + 1) / 2 + m;
+					const integer i_complex = l * (l + 1) / 2 + std::abs(m);
 					const integer i_real = l * (l + 1) + m;
 					if (m >= 0) {
 						A[i_complex].real(1);
 					} else {
 						A[i_complex].imag(1);
 					}
-					const auto m2m = fmm.M2M(A, dist);
-					const auto l2l = fmm.L2L(A, dist);
+					const auto m2m = fmm.M2M(A, dist_m);
+					const auto l2l = fmm.L2L(A, dist_l);
 					for (integer j = 0; j != LMAX; ++j) {
-						for (integer k = 0; k != j; ++k) {
+						for (integer k = 0; k <= j; ++k) {
 							const integer jk = j * (j + 1) / 2 + k;
 							const integer jkp = j * j + j + k;
 							const integer jkm = j * j + j - k;
@@ -494,20 +440,20 @@ fourier_legendre::fourier_legendre() {
 
 		printf("Computing spherical multipole interactions...\n");
 		std::array<real, NDIM> dist;
-		for (integer di = -DNMAX; di != DNMAX; ++di) {
-			dist[0] = real(di);
-			for (integer dj = -DNMAX; dj != DNMAX; ++dj) {
+		for (integer di = -DNMAX; di <= DNMAX; ++di) {
+			dist[0] = real(2 * di);
+			for (integer dj = -DNMAX; dj <= DNMAX; ++dj) {
 				printf("	%i %i %i-%i\n", int(di), int(dj), int(-DNMAX), int(DNMAX));
-				dist[1] = real(dj);
-				for (integer dk = -DNMAX; dk != DNMAX; ++dk) {
+				dist[1] = real(2 * dj);
+				for (integer dk = -DNMAX; dk <= DNMAX; ++dk) {
 					if (std::abs(di) + std::abs(dj) + std::abs(dk) != 0) {
-						dist[2] = real(dk);
+						dist[2] = real(2 * dk);
 						const integer index = ((di + DNMAX) * (2 * DNMAX + 1) + (dj + DNMAX)) * (2 * DNMAX + 1)
 								+ (dk + DNMAX);
 						for (integer l = 0; l != LMAX; ++l) {
-							for (integer m = -l; m != +l; ++m) {
+							for (integer m = -l; m <= +l; ++m) {
 								std::valarray<complex> A(complex(0, 0), LMAX * (LMAX + 1) / 2);
-								const integer i_complex = l * (l + 1) / 2 + m;
+								const integer i_complex = l * (l + 1) / 2 + std::abs(m);
 								const integer i_real = l * (l + 1) + m;
 								if (m >= 0) {
 									A[i_complex].real(1);
@@ -516,7 +462,7 @@ fourier_legendre::fourier_legendre() {
 								}
 								const auto m2l = fmm.M2L(A, dist);
 								for (integer j = 0; j != LMAX; ++j) {
-									for (integer k = 0; k != j; ++k) {
+									for (integer k = 0; k <= j; ++k) {
 										const integer jk = j * (j + 1) / 2 + k;
 										const integer jkp = j * j + j + k;
 										const integer jkm = j * j + j - k;
@@ -532,6 +478,71 @@ fourier_legendre::fourier_legendre() {
 				}
 			}
 		}
+
+		printf("Computing gravity interaction coefficients...\n");
+		for (integer di = -DNMAX; di <= DNMAX; ++di) {
+			for (integer dj = -DNMAX; dj <= DNMAX; ++dj) {
+				printf("	%i %i %i-%i\n", int(di), int(dj), int(-DNMAX), int(DNMAX));
+				for (integer dk = -DNMAX; dk <= DNMAX; ++dk) {
+					const integer iii = ((di + DNMAX) * (2 * DNMAX + 1) + (dj + DNMAX)) * (2 * DNMAX + 1)
+							+ (dk + DNMAX);
+					for (integer g1x = 0; g1x != PHI; ++g1x) {
+						for (integer g1y = 0; g1y != PHI; ++g1y) {
+							for (integer g1z = 0; g1z != PHI; ++g1z) {
+								const auto P1x = LegendreP(hires_qpt[g1x], P);
+								const auto P1y = LegendreP(hires_qpt[g1y], P);
+								const auto P1z = LegendreP(hires_qpt[g1z], P);
+								const real w1x = hires_qwt[g1x];
+								const real w1y = hires_qwt[g1y];
+								const real w1z = hires_qwt[g1z];
+								const real w1 = (w1x * w1y * w1z);
+								for (integer g2x = 0; g2x != PHI; ++g2x) {
+									for (integer g2y = 0; g2y != PHI; ++g2y) {
+										for (integer g2z = 0; g2z != PHI; ++g2z) {
+											const auto P2x = LegendreP(hires_qpt[g2x], P);
+											const auto P2y = LegendreP(hires_qpt[g2y], P);
+											const auto P2z = LegendreP(hires_qpt[g2z], P);
+											const real w2x = hires_qwt[g2x];
+											const real w2y = hires_qwt[g2y];
+											const real w2z = hires_qwt[g2z];
+											const real dx = real(2) * real(di) + hires_qpt[g1x] - hires_qpt[g2x];
+											const real dy = real(2) * real(dj) + hires_qpt[g1y] - hires_qpt[g2y];
+											const real dz = real(2) * real(dk) + hires_qpt[g1z] - hires_qpt[g2z];
+											const real w2 = (w2x * w2y * w2z);
+											const real r = std::sqrt(dx * dx + dy * dy + dz * dz);
+											if (r != real(0)) {
+												const real kernel = real(1) / r;
+												for (integer l1 = 0; l1 != P; ++l1) {
+													for (integer m1 = 0; m1 != P - l1; ++m1) {
+														for (integer n1 = 0; n1 != P - l1 - m1; ++n1) {
+															const real n1x = LegendreP_norm(l1);
+															const real n1y = LegendreP_norm(m1);
+															const real n1z = LegendreP_norm(n1);
+															const real n1_inv = real(1) / (n1x * n1y * n1z);
+															for (integer l2 = 0; l2 != P; ++l2) {
+																const real p1 = (P1x[l1] * P1y[m1] * P1z[n1]);
+																for (integer m2 = 0; m2 != P - l2; ++m2) {
+																	for (integer n2 = 0; n2 != P - l2 - m2; ++n2) {
+																		P2P[iii][pindex(l1, m1, n1)][pindex(l2, m2, n2)] +=
+																				((p1 * (P2x[l2] * P2y[m2] * P2z[n2]))
+																						* (w2 * w1) * n1_inv) * kernel;
+																	}
+																}
+															}
+														}
+													}
+												}
+											}
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
 		write(filename);
 		free(filename);
 	}
@@ -627,32 +638,41 @@ simd_vector fourier_legendre::p2p_transform(integer i, integer j, integer k, con
 	return p_out;
 }
 
-simd_vector fourier_legendre::m2l_transform(integer i, integer j, integer k, const simd_vector& p_in) {
+simd_vector fourier_legendre::m2l_transform(integer i, integer j, integer k, const simd_vector& p_in, real dx) {
 	simd_vector p_out(real(0), L2);
 	const integer index = (i + DNMAX) * (2 * DNMAX + 1) * (2 * DNMAX + 1) + (j + DNMAX) * (2 * DNMAX + 1) + (k + DNMAX);
-	for (integer p = 0; p != L2; ++p) {
-		p_out[p] += (M2L[index][p] * p_in).sum();
+	simd_vector dx_nm = std::pow(dx, -rpow_l);
+	simd_vector p2 = dx_nm * p_in;
+	for (integer l = 0; l != L2; ++l) {
+		p_out[l] += ((M2L[index][l] * dx_nm[l] / dx) * p2).sum();
 	}
 	return p_out;
 }
 
-simd_vector fourier_legendre::m2m_transform(integer ci, const simd_vector& m_in) {
+simd_vector fourier_legendre::m2m_transform(integer ci, const simd_vector& m_in, real dx) {
 	simd_vector m_out(real(0), L2);
-	for (integer p = 0; p != L2; ++p) {
-		m_out[p] += (M2M[ci][p] * m_in).sum();
+	simd_vector dx_np = std::pow(dx, +rpow_l);
+	simd_vector dx_nm = std::pow(dx, -rpow_l);
+	simd_vector m2 = dx_nm * m_in;
+	for (integer l = 0; l != L2; ++l) {
+		m_out[l] += ((M2M[ci][l] * dx_np[l]) * m2).sum();
 	}
 	return m_out;
 }
 
-simd_vector fourier_legendre::l2l_transform(integer ci, const simd_vector& l_in) {
+simd_vector fourier_legendre::l2l_transform(integer ci, const simd_vector& l_in, real dx) {
 	simd_vector l_out(real(0), L2);
-	for (integer p = 0; p != L2; ++p) {
-		l_out[p] += (L2L[ci][p] * l_in).sum();
+	dx = dx / real(2);
+	simd_vector dx_np = std::pow(dx, +rpow_l);
+	simd_vector dx_nm = std::pow(dx, -rpow_l);
+	simd_vector l2 = dx_np * l_in;
+	for (integer l = 0; l != L2; ++l) {
+		l_out[l] += ((L2L[ci][l] * dx_nm[l]) * l2).sum();
 	}
 	return l_out;
 }
 
-simd_vector fourier_legendre::l2p_transform( const simd_vector& l_in) {
+simd_vector fourier_legendre::l2p_transform(const simd_vector& l_in) {
 	simd_vector phi_out(P3);
 	for (integer p = 0; p != P3; ++p) {
 		phi_out[p] = (L2_phi[p] * l_in).sum();
@@ -690,9 +710,6 @@ void fourier_legendre::write(const char* filename) {
 	arc << P2P;
 	arc << rho_2M;
 	arc << L2_phi;
-	arc << L2_gx;
-	arc << L2_gy;
-	arc << L2_gz;
 	arc << M2M;
 	arc << M2L;
 	arc << L2L;
@@ -721,9 +738,6 @@ void fourier_legendre::read(const char* filename) {
 	arc >> P2P;
 	arc >> rho_2M;
 	arc >> L2_phi;
-	arc >> L2_gx;
-	arc >> L2_gy;
-	arc >> L2_gz;
 	arc >> M2M;
 	arc >> M2L;
 	arc >> L2L;

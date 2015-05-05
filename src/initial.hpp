@@ -12,5 +12,6 @@
 
 std::vector<real> sod_shock_tube(real x, real y, real z);
 std::vector<real> blast_wave(real x, real y, real z);
+std::vector<real> star(real x, real y, real z);
 
 #endif /* INITIAL_HPP_ */

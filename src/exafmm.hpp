@@ -20,7 +20,7 @@ struct exafmm {
 	std::valarray<complex> M2L(const std::valarray<complex>& Mj, std::array<real, NDIM> dist);
 	std::valarray<complex> L2L(const std::valarray<complex>& Lj, std::array<real, NDIM> dist);
 	std::valarray<complex> P2M(std::array<real, NDIM> dist);
-	std::valarray<real> L2P(const std::valarray<complex>& Li, std::array<real, NDIM> dist);
+	real L2P(const std::valarray<complex>& Li, std::array<real, NDIM> dist);
 	exafmm();
 };
 

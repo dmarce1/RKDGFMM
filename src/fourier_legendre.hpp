@@ -42,12 +42,11 @@ private:
 	static std::vector<std::vector<simd_vector>> P2P;
 	static std::vector<simd_vector> rho_2M;
 	static std::vector<simd_vector> L2_phi;
-	static std::vector<simd_vector> L2_gx;
-	static std::vector<simd_vector> L2_gy;
-	static std::vector<simd_vector> L2_gz;
 	static std::vector<std::vector<simd_vector>> M2M;
 	static std::vector<std::vector<simd_vector>> M2L;
 	static std::vector<std::vector<simd_vector>> L2L;
+	static simd_vector rpow_l;
+	static simd_vector rpow_p;
 
 	static void write(const char* filename);
 	static void read(const char* filename);
@@ -69,9 +68,9 @@ public:
 	static simd_vector prolong(const simd_vector&, integer);
 	static simd_vector _restrict(const simd_vector&, integer);
 	static simd_vector p2p_transform(integer, integer, integer, const simd_vector&);
-	static simd_vector m2l_transform(integer, integer, integer, const simd_vector&);
-	static simd_vector m2m_transform(integer, const simd_vector&);
-	static simd_vector l2l_transform(integer, const simd_vector&);
+	static simd_vector m2l_transform(integer, integer, integer, const simd_vector&, real dx);
+	static simd_vector m2m_transform(integer, const simd_vector&, real dx);
+	static simd_vector l2l_transform(integer, const simd_vector&, real dx);
 	static simd_vector l2p_transform(const simd_vector&);
 	static simd_vector p2m_transform(const simd_vector&);
 };

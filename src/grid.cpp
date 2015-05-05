@@ -619,10 +619,11 @@ void grid::output(const char* filename) const {
 	DBPutUcdmesh(db, "mesh", int(NDIM), coord_names, node_coords.data(), nnodes, nzones, "zones", nullptr, DB_DOUBLE,
 			nullptr);
 
-	const char* field_names[] = { "rho", "egas", "tau", "sx", "sy", "sz" };
+	const char* field_names[] = { "rho", "egas", "tau", "sx", "sy", "sz", "phi" };
 	constexpr integer I3 = INX * INX * INX;
-	std::vector<double> rho(I3 * G3), sx(I3 * G3), sy(I3 * G3), sz(I3 * G3), egas(I3 * G3), tau(I3 * G3);
-	std::array<double*, NF> u_data = { rho.data(), sx.data(), sy.data(), sz.data(), egas.data(), tau.data() };
+	std::vector<double> rho(I3 * G3), sx(I3 * G3), sy(I3 * G3), sz(I3 * G3), egas(I3 * G3), tau(I3 * G3), phi(I3 * G3);
+	std::array<double*, NF + 1> u_data = { rho.data(), sx.data(), sy.data(), sz.data(), egas.data(), tau.data(),
+			phi.data() };
 	index = 0;
 	for (integer i = BW; i != NX - BW; ++i) {
 		for (integer j = BW; j != NX - BW; ++j) {
@@ -634,21 +635,74 @@ void grid::output(const char* filename) const {
 						u_data[f][index + ggg] = U_h[ggg];
 					}
 				}
+				auto phi_h = Fourier.inverse_transform(phi_p[iii]);
+				for (integer ggg = 0; ggg != G3; ++ggg) {
+					u_data[NF][index + ggg] = phi_h[ggg];
+				}
 				index += G3;
 			}
 		}
 	}
-	for (int f = 0; f != NF; ++f) {
+	for (int f = 0; f != NF + 1; ++f) {
 		DBPutUcdvar1(db, field_names[f], "mesh", u_data[f], nzones, nullptr, 0, DB_DOUBLE, DB_ZONECENT, nullptr);
 	}
 
 	DBClose(db);
 }
 
+void grid::compute_interactions(integer rk) {
+	integer lev = nlevel - 1;
+	for (integer inx = 2; inx <= INX; inx <<= 1) {
+		const integer nx = inx + 2 * BW;
+		for (integer i0 = BW; i0 != nx - BW; ++i0) {
+			for (integer j0 = BW; j0 != nx - BW; ++j0) {
+				for (integer k0 = BW; k0 != nx - BW; ++k0) {
+					const integer iii0 = i0 * nx * nx + j0 * nx + k0;
+					phi_l[lev][iii0] = real(0);
+					if (lev == 0) {
+						phi_p[iii0] = real(0);
+						phi_l[0][iii0] = real(0);
+					}
+					const integer imin = 2 * ((i0 / 2) - 1);
+					const integer imax = 2 * ((i0 / 2) + 1) + 1;
+					const integer jmin = 2 * ((j0 / 2) - 1);
+					const integer jmax = 2 * ((j0 / 2) + 1) + 1;
+					const integer kmin = 2 * ((k0 / 2) - 1);
+					const integer kmax = 2 * ((k0 / 2) + 1) + 1;
+					//		printf( "%i %i %i %i %i %i\n", int(imin), int(imax), int(jmin), int(jmax), int(kmin), int(kmax));
+					for (integer i1 = imin; i1 <= imax; ++i1) {
+						for (integer j1 = jmin; j1 <= jmax; ++j1) {
+							for (integer k1 = kmin; k1 <= kmax; ++k1) {
+								const integer iii1 = i1 * nx * nx + j1 * nx + k1;
+								if (lev != 0
+										&& ((std::abs(i0 - i1) > 1) || (std::abs(j0 - j1) > 1)
+												|| (std::abs(k0 - k1) > 1))) {
+									phi_l[lev][iii0] += Fourier.m2l_transform(i0 - i1, j0 - j1, k0 - k1,
+											rho_l[lev][iii1], real(1 << lev));
+								} else if (lev == 0) {
+									//		phi_l[lev][iii0] += Fourier.m2l_transform(i0 - i1, j0 - j1, k0 - k1,
+									//				rho_l[lev][iii1], real(1 << lev));
+									phi_p[iii0] += Fourier.p2p_transform(i0 - i1, j0 - j1, k0 - k1,
+											U_p[rk][iii1].rho());
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+		--lev;
+	}
+}
+
 void grid::compute_multipoles(integer rk) {
 	integer lev = 0;
 	for (integer iii = 0; iii != N3; ++iii) {
-		rho_l[lev][iii] = Fourier.p2m_transform(U_p[rk][iii].rho());
+		if (is_interior[iii]) {
+			rho_l[lev][iii] = Fourier.p2m_transform(U_p[rk][iii].rho());
+		} else {
+			rho_l[lev][iii] = real(0);
+		}
 	}
 	for (integer inx = INX / 2; inx > 1; inx >>= 1) {
 		++lev;
@@ -664,52 +718,23 @@ void grid::compute_multipoles(integer rk) {
 						const integer kc = (2 * kp - BW) + ((ci >> 2) & 1);
 						const integer iiic = nxc * nxc * ic + nxc * jc + kc;
 						const integer iiip = nxp * nxp * ip + nxp * jp + kp;
-						simd_vector tmp = Fourier.m2m_transform(ci, rho_l[lev - 1][iiic]);
-						rho_l[lev][iiip] += tmp;
+						rho_l[lev][iiip] += Fourier.m2m_transform(ci, rho_l[lev - 1][iiic], real(1 << (lev - 1)));
 					}
 				}
 			}
 		}
 	}
-}
-
-void grid::compute_interactions(integer rk) {
-	integer this_level = nlevel - 1;
-	for (integer inx = 2; inx <= INX; inx <<= 1) {
-		const integer nx = inx + 2 * BW;
-		for (integer i0 = BW; i0 != nx - BW; ++i0) {
-			for (integer j0 = BW; j0 != nx - BW; ++j0) {
-				for (integer k0 = BW; k0 != nx - BW; ++k0) {
-					const integer iii0 = i0 * nx * nx + j0 * nx + k0;
-					phi_l[0][iii0] = real(0);
-					if (this_level == 0) {
-						phi_p[iii0] = real(0);
-					}
-					const integer imin = 2 * ((i0 / 2) - 1);
-					const integer imax = 2 * ((i0 / 2) + 1) + 1;
-					const integer jmin = 2 * ((j0 / 2) - 1);
-					const integer jmax = 2 * ((j0 / 2) + 1) + 1;
-					const integer kmin = 2 * ((k0 / 2) - 1);
-					const integer kmax = 2 * ((k0 / 2) + 1) + 1;
-					for (integer i1 = imin; i1 <= imax; ++i1) {
-						for (integer j1 = jmin; j1 <= jmax; ++j1) {
-							for (integer k1 = kmin; k1 <= kmax; ++k1) {
-								const integer iii1 = i1 * nx * nx + j1 * nx + k1;
-								if (this_level != 0) {
-									phi_l[this_level][iii0] += Fourier.m2l_transform(i1 - i0, j1 - j0, k1 - k0,
-											rho_l[this_level][iii1]);
-								} else {
-									auto tmp = Fourier.p2p_transform(i1 - i0, j1 - j0, k1 - k0, U_p[rk][iii1].rho());
-									phi_p[iii0] += tmp;
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-		--this_level;
-	}
+	lev = 1;
+	/*	const integer nxp = (INX >> lev) + 2 * BW;
+	 for (integer ip = BW; ip != nxp - BW; ++ip) {
+	 for (integer jp = BW; jp != nxp - BW; ++jp) {
+	 for (integer kp = BW; kp != nxp - BW; ++kp) {
+	 const integer iiip = nxp * nxp * ip + nxp * jp + kp;
+	 printf("%i %i %i %e %e %e %e\n", int(ip - BW), int(jp - BW), int(kp - BW), rho_l[lev][iiip][0], rho_l[lev][iiip][1], rho_l[lev][iiip][2], rho_l[lev][iiip][3]);
+	 }
+	 }
+	 }
+	 abort();*/
 }
 
 void grid::expand_phi(integer rk) {
@@ -727,7 +752,7 @@ void grid::expand_phi(integer rk) {
 						const integer jc = (2 * jp - BW) + ((ci >> 1) & 1);
 						const integer kc = (2 * kp - BW) + ((ci >> 2) & 1);
 						const integer iiic = nxc * nxc * ic + nxc * jc + kc;
-						phi_l[lev][iiic] += Fourier.l2l_transform(ci, phi_l[lev + 1][iiip]);
+						phi_l[lev][iiic] += Fourier.l2l_transform(ci, phi_l[lev + 1][iiip], real(1 << (lev + 1)));
 					}
 				}
 			}

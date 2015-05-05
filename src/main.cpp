@@ -19,10 +19,9 @@ int main(void) {
 	feenableexcept(FE_OVERFLOW);
 #endif
 	grid g;
-	g.initialize(blast_wave);
+	g.initialize(star);
 	g.enforce_boundaries(0);
 	g.project(0);
-	g.compute_fmm(0);
 	real t = real(0);
 	real dt;
 	real dx = real(2) / real(NX);
@@ -30,8 +29,11 @@ int main(void) {
 	real amax = g.enforce_positivity(0);
 	real output_dt = 1.0e-1;
 	integer output_cnt = 0;
+	g.compute_fmm(0);
 	g.output("X.0.silo");
 	++output_cnt;
+
+
 	while (t < TMAX) {
 		dt = dx / amax * cfl[NRK - 1];
 		printf("t = 0.0 ");

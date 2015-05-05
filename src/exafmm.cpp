@@ -26,25 +26,19 @@
 real norm(const std::array<real, NDIM>& v) {
 	return v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
 }
-const real ELMAXS = 1e-15;                                    //!< Single/double precision epsilon
-
 //! Get r,theta,phi from x,y,z
 void cart2sph(real& r, real& theta, real& phi, std::array<real, NDIM> dist) {
-	r = sqrt(norm(dist)) * (1 + ELMAXS);                           // r = sqrt(x^2 + y^2 + z^2)
-	if (r < ELMAXS) {                                             // If r == 0
+	r = std::sqrt(norm(dist));                           // r = sqrt(x^2 + y^2 + z^2)
+	if (r == real(0)) {                                             // If r == 0
 		theta = 0;                                                //  theta can be anything so we set it to 0
 	} else {                                                    // If r != 0
-		theta = acos(dist[2] / r);                                //  theta = acos(z / r)
+		theta = std::acos(dist[2] / r);                                //  theta = acos(z / r)
 	}                                                           // End if for r == 0
-	if (std::abs(dist[0]) + std::abs(dist[1]) < ELMAXS) {                 // If |x| < eps & |y| < eps
+	if (std::abs(dist[0]) + std::abs(dist[1]) == real(0)) {                 // If |x| < eps & |y| < eps
 		phi = 0;                                                  //  phi can be anything so we set it to 0
-	} else if (std::abs(dist[0]) < ELMAXS) {                          // If |x| < eps
-		phi = dist[1] / std::abs(dist[1]) * M_PI * 0.5;               //  phi = sign(y) * pi / 2
-	} else if (dist[0] > 0) {                                  // If x > 0
-		phi = atan(dist[1] / dist[0]);                            //  phi = atan(y / x)
-	} else {                                                    // If x < 0
-		phi = atan(dist[1] / dist[0]) + M_PI;                     //  phi = atan(y / x) + pi
-	}                                                           // End if for x,y cases
+	} else {                                  // If x > 0
+		phi = std::atan2(dist[1], dist[0]);                            //  phi = atan(y / x)
+	}
 }
 
 //! Spherical to cartesian coordinates
@@ -78,10 +72,10 @@ exafmm::exafmm() {
 		for (int m = -n; m <= n; ++m) {                              //  Loop over m in Anm
 			int nm = n * n + n + m;                                       //   Index of Anm
 			int nabsm = std::abs(m);                                     //   |m|
-			real fnmm = ELMAXS;                                        //   Initialize (n - m)!
+			real fnmm = real(1);                                        //   Initialize (n - m)!
 			for (int i = 1; i <= n - m; ++i)
 				fnmm *= i;                  //   (n - m)!
-			real fnpm = ELMAXS;                                        //   Initialize (n + m)!
+			real fnpm = real(1);                                        //   Initialize (n + m)!
 			for (int i = 1; i <= n + m; ++i)
 				fnpm *= i;                  //   (n + m)!
 			real fnma = 1.0;                                        //   Initialize (n - |m|)!
@@ -102,7 +96,7 @@ exafmm::exafmm() {
 					if (j + n < LMAX) {
 						const int jnkm = (j + n) * (j + n) + j + n + m - k;               //     Index C_{j+n}^{m-k}
 						Cnm[jknm] = std::pow(I, real(std::abs(k - m) - std::abs(k) - std::abs(m)))          //     Cjknm
-						* real(ODDEVEN(j) * Anm[nm] * Anm[jk] / Anm[jnkm]) * ELMAXS;
+						* real(ODDEVEN(j) * Anm[nm] * Anm[jk] / Anm[jnkm]);
 					}
 				}                                                     //    End loop over m in Cjknm
 			}                                                       //   End loop over n in Cjknm
@@ -127,7 +121,9 @@ void evalMultipole(real rho, real alpha, real beta, complex *Ynm, complex *YnmTh
 		Ynm[nmn] = std::conj(Ynm[npn]);                           //  Use conjugate relation for m < 0
 		real p1 = p;                                              //  LMAXnm-1
 		p = x * (2 * m + 1) * p1;                                 //  LMAXnm using recurrence relation
-		YnmTheta[npn] = rhom * (p - (m + 1) * x * p1) / y * prefactor[npn] * eim;       // theta derivative of r^n * Ynm
+		if (y != real(0)) {
+			YnmTheta[npn] = rhom * (p - (m + 1) * x * p1) / y * prefactor[npn] * eim;   // theta derivative of r^n * Ynm
+		}
 		rhom *= rho;                                              //  rho^m
 		real rhon = rhom;                                         //  rho^n
 		for (int n = m + 1; n != LMAX; ++n) {                             //  Loop over n in Ynm
@@ -137,13 +133,15 @@ void evalMultipole(real rho, real alpha, real beta, complex *Ynm, complex *YnmTh
 			Ynm[nmm] = std::conj(Ynm[npm]);                         //   Use conjugate relation for m < 0
 			real p2 = p1;                                           //   LMAXnm-2
 			p1 = p;                                                 //   LMAXnm-1
-			p = (x * (2 * n + 1) * p1 - (n + m) * p2) / (n - m + 1);               //   LMAXnm using recurrence relation
-			YnmTheta[npm] = rhon * ((n - m + 1) * p - (n + 1) * x * p1) / y * prefactor[npm] * eim;  // theta derivative
+			p = (x * (2 * n + 1) * p1 - (n + m) * p2) / (n - m + 1);           //   LMAXnm using recurrence relation
+			if (y != real(0)) {
+				YnmTheta[npm] = rhon * ((n - m + 1) * p - (n + 1) * x * p1) / y * prefactor[npm] * eim; // theta derivative
+			}
 			rhon *= rho;                                            //   Update rho^n
 		}                                                         //  End loop over n in Ynm
 		pn = -pn * fact * y;                                      //  LMAXn
 		fact += 2;                                                //  2 * m + 1
-	}                                                           // End loop over m in Ynm
+	}
 }
 
 //! Evaluate singular harmonics \f$ r^{-n-1} Y_n^m \f$
@@ -213,7 +211,7 @@ std::valarray<complex> exafmm::M2M(const std::valarray<complex>& Mj, std::array<
 					}
 				}
 			}
-			Mi[jks] += M * ELMAXS;
+			Mi[jks] += M;
 		}
 	}
 	return Mi;
@@ -281,13 +279,14 @@ std::valarray<complex> exafmm::L2L(const std::valarray<complex>& Lj, std::array<
 					}
 				}
 			}
-			Li[jks] += L * ELMAXS;
+			Li[jks] += L;
 		}
 	}
 	return Li;
 }
 
 std::valarray<complex> exafmm::P2M(std::array<real, NDIM> dist) {
+//	printf( "%e %e %e\n", dist[0], dist[1], dist[2]);
 	std::valarray<complex> Mj(complex(0, 0), LMAX * (LMAX + 1) / 2);
 	complex Ynm[LMAX * LMAX], YnmTheta[LMAX * LMAX];
 	real rho, alpha, beta;
@@ -300,37 +299,28 @@ std::valarray<complex> exafmm::P2M(std::array<real, NDIM> dist) {
 			Mj[nms] += Ynm[nm];
 		}
 	}
+//	printf( "		%e %e %e %e\n",Ynm[0].real(), Ynm[1].real(), Ynm[2].real(), Ynm[3].real());
+//	printf( "		%e %e %e %e\n",Ynm[0].imag(), Ynm[1].imag(), Ynm[2].imag(), Ynm[3].imag());
 	return Mj;
 }
 
-std::valarray<real> exafmm::L2P(const std::valarray<complex>& Li, std::array<real, NDIM> dist) {
-	std::valarray<real> trg(real(0), 4);
+real exafmm::L2P(const std::valarray<complex>& Li, std::array<real, NDIM> dist) {
+	real trg = real(0);
 	const complex I(0., 1.);                                       // Imaginary unit
 	complex Ynm[LMAX * LMAX], YnmTheta[LMAX * LMAX];
-	std::array<real, NDIM> spherical = { 0, 0, 0 };
-	std::array<real, NDIM> cartesian = { 0, 0, 0 };
 	real r, theta, phi;
 	cart2sph(r, theta, phi, dist);
 	evalMultipole(r, theta, phi, Ynm, YnmTheta);
 	for (int n = 0; n != LMAX; ++n) {
 		int nm = n * n + n;
 		int nms = n * (n + 1) / 2;
-		trg[0] += std::real(Li[nms] * Ynm[nm]);
-		spherical[0] += std::real(Li[nms] * Ynm[nm]) / r * n;
-		spherical[1] += std::real(Li[nms] * YnmTheta[nm]);
+		trg += std::real(Li[nms] * Ynm[nm]);
 		for (int m = 1; m <= n; ++m) {
 			nm = n * n + n + m;
 			nms = n * (n + 1) / 2 + m;
-			trg[0] += 2 * std::real(Li[nms] * Ynm[nm]);
-			spherical[0] += 2 * std::real(Li[nms] * Ynm[nm]) / r * n;
-			spherical[1] += 2 * std::real(Li[nms] * YnmTheta[nm]);
-			spherical[2] += 2 * std::real(Li[nms] * Ynm[nm] * I) * m;
+			trg += 2 * std::real(Li[nms] * Ynm[nm]);
 		}
 	}
-	sph2cart(r, theta, phi, spherical, cartesian);
-	trg[1] += cartesian[0];
-	trg[2] += cartesian[1];
-	trg[3] += cartesian[2];
 	return trg;
 }
 
