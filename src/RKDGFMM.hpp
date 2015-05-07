@@ -16,11 +16,11 @@ using integer = long long int;
 
 #define NOGRAVITY
 
-static constexpr integer P = 2;
+static constexpr integer P = 5;
 static constexpr integer NRK = 3;
-static constexpr integer INX = 16;
+static constexpr integer INX = 32;
 
-static constexpr integer LMAX = 2*P;
+static constexpr integer LMAX = P+1;
 static constexpr integer L2 = LMAX*LMAX;
 static constexpr integer NF = 6;
 static constexpr integer BW = 2;

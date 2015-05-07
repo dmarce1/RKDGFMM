@@ -21,14 +21,21 @@ private:
 	fourier_legendre Fourier;
 	integer nlevel;
 	std::vector<std::vector<simd_vector>> rho_l;
-	std::vector<simd_vector> phi_p;
 	std::vector<simd_vector> phi_p_analytic;
-	std::vector<simd_vector> gx_p_analytic;
-	std::vector<simd_vector> gy_p_analytic;
-	std::vector<simd_vector> gz_p_analytic;
-	std::vector<simd_vector> gx_p;
-	std::vector<simd_vector> gy_p;
-	std::vector<simd_vector> gz_p;
+	std::vector<simd_vector> gx_h_analytic;
+	std::vector<simd_vector> gy_h_analytic;
+	std::vector<simd_vector> gz_h_analytic;
+
+//	std::vector<simd_vector> phi_p;
+//	std::vector<simd_vector> gx_p;
+//	std::vector<simd_vector> gy_p;
+//	std::vector<simd_vector> gz_p;
+
+	std::vector<simd_vector> phi_h;
+	std::vector<simd_vector> gx_h;
+	std::vector<simd_vector> gy_h;
+	std::vector<simd_vector> gz_h;
+
 	std::vector<std::vector<simd_vector>> phi_l;
 	std::vector<std::vector<conserved_vars>> U_p;
 	std::vector<std::vector<std::vector<simd_vector>>>dU_dt_p;
@@ -61,11 +68,11 @@ public:
 	void compute_multipoles(integer rk);
 	void compute_interactions(integer rk);
 	void expand_phi(integer rk);
-	void compute_force();
+	void compute_force(integer rk);
 	void compute_fmm(integer rk) {
 		compute_multipoles(rk);
 		compute_interactions(rk);
 		expand_phi(rk);
-		compute_force();
+		compute_force(rk);
 	}
 };

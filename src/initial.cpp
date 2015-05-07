@@ -9,18 +9,22 @@
 #include "tests/lane_emden.hpp"
 #include <atomic>
 
+const real x0 = 0.05;
+const real y0_ = -0.10;
+const real z0 = 0.15;
+constexpr
+real rmax = 3.65376;
+constexpr
+real dr = rmax / 100.0;
+
 std::vector<real> star(real x, real y, real z) {
-	x -= 0.1;
-	y -= 0.1;
-	z -= 0.1;
-	constexpr
-	real rmax = 3.65376;
-	constexpr
-	real dr = rmax / 50.0;
+	x -= x0;
+	y -= y0_;
+	z -= z0;
 	real theta;
 	const real n = real(1) / (fgamma - real(1));
 	const real alpha = real(1) / real(8);
-	const real rho_min = 1.0e-20;
+	const real rho_min = 1.0e-4;
 	std::vector < real > u(NF, real(0));
 	const real r = std::sqrt(x * x + y * y + z * z) / alpha;
 	const real theta_min = std::pow(rho_min, real(1) / n);
@@ -38,19 +42,15 @@ std::vector<real> star(real x, real y, real z) {
 }
 
 void star_force(real x, real y, real z, real& fx, real& fy, real& fz) {
-	x -= 0.1;
-	y -= 0.1;
-	z -= 0.1;
-	constexpr
-	real rmax = 3.65376;
-	constexpr
-	real dr = rmax / 50.0;
+	x -= x0;
+	y -= y0_;
+	z -= z0;
 	constexpr
 	real mtot = 3.410854709920873e+01;
 	real m;
 	const real n = real(1) / (fgamma - real(1));
 	const real alpha = real(1) / real(8);
-	const real rho_min = 1.0e-20;
+	const real rho_min = 1.0e-4;
 	const real r = std::sqrt(x * x + y * y + z * z) / alpha;
 	const auto c0 = real(4) * real(M_PI) * alpha * alpha / (n + real(1));
 	if (r < rmax) {

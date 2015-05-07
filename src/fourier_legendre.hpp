@@ -40,9 +40,15 @@ private:
 	static std::vector<std::vector<simd_vector>> surface_inverse_transform_coefficient;
 	static std::vector<std::vector<simd_vector>> restrict_coefficients;
 	static std::vector<std::vector<simd_vector>> prolong_coefficients;
-	static std::vector<std::vector<simd_vector>> P2P;
+	static std::vector<std::vector<simd_vector>> P2_phi;
+	static std::vector<std::vector<simd_vector>> P2_gx;
+	static std::vector<std::vector<simd_vector>> P2_gy;
+	static std::vector<std::vector<simd_vector>> P2_gz;
 	static std::vector<simd_vector> rho_2M;
 	static std::vector<simd_vector> L2_phi;
+	static std::vector<simd_vector> L2_gx;
+	static std::vector<simd_vector> L2_gy;
+	static std::vector<simd_vector> L2_gz;
 	static std::vector<std::vector<simd_vector>> M2M;
 	static std::vector<std::vector<simd_vector>> M2L;
 	static std::vector<std::vector<simd_vector>> L2L;
@@ -69,11 +75,15 @@ public:
 	static const std::vector<real>& quadrature_weights();
 	static simd_vector prolong(const simd_vector&, integer);
 	static simd_vector _restrict(const simd_vector&, integer);
-	static simd_vector p2p_transform(integer, integer, integer, const simd_vector&, real dx);
+	static simd_vector p2_phi_transform(integer, integer, integer, const simd_vector&, real dx);
+	static simd_vector p2_gx_transform(integer, integer, integer, const simd_vector&, real dx);
+	static simd_vector p2_gy_transform(integer, integer, integer, const simd_vector&, real dx);
+	static simd_vector p2_gz_transform(integer, integer, integer, const simd_vector&, real dx);
 	static simd_vector m2l_transform(integer, integer, integer, const simd_vector&, real dx);
 	static simd_vector m2m_transform(integer, const simd_vector&, real dx);
 	static simd_vector l2l_transform(integer, const simd_vector&, real dx);
 	static simd_vector l2p_transform(const simd_vector&, real dx);
+	static simd_vector dl2p_transform_dx(dimension, const simd_vector&, real dx);
 	static simd_vector p2m_transform(const simd_vector&, real dx);
 };
 
