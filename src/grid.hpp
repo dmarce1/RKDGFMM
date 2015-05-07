@@ -16,11 +16,19 @@ private:
 
 	integer dx_i, dy_i, dz_i;
 	std::array<integer, NDIM> d_i;
-	const real dx;
+	const real h;
+	const real hinv;
 	fourier_legendre Fourier;
 	integer nlevel;
 	std::vector<std::vector<simd_vector>> rho_l;
 	std::vector<simd_vector> phi_p;
+	std::vector<simd_vector> phi_p_analytic;
+	std::vector<simd_vector> gx_p_analytic;
+	std::vector<simd_vector> gy_p_analytic;
+	std::vector<simd_vector> gz_p_analytic;
+	std::vector<simd_vector> gx_p;
+	std::vector<simd_vector> gy_p;
+	std::vector<simd_vector> gz_p;
 	std::vector<std::vector<simd_vector>> phi_l;
 	std::vector<std::vector<conserved_vars>> U_p;
 	std::vector<std::vector<std::vector<simd_vector>>>dU_dt_p;
@@ -49,13 +57,15 @@ public:
 	void project(integer rk);
 	void output( const char*) const;
 	void enforce_boundaries(integer rk);
-	void diagnostics(integer rk );
+	void diagnostics();
 	void compute_multipoles(integer rk);
 	void compute_interactions(integer rk);
 	void expand_phi(integer rk);
+	void compute_force();
 	void compute_fmm(integer rk) {
 		compute_multipoles(rk);
 		compute_interactions(rk);
 		expand_phi(rk);
+		compute_force();
 	}
 };

@@ -11,7 +11,7 @@
 #include <atomic>
 #include "exafmm.hpp"
 
-integer fourier_legendre::PHI = P + 1;
+integer fourier_legendre::PHI = P;
 integer fourier_legendre::PHI3 = (PHI + 2) * (PHI + 1) * PHI / 6;
 integer fourier_legendre::N_Lobatto;
 std::vector<std::vector<simd_vector>> fourier_legendre::P2P;
@@ -24,6 +24,7 @@ std::vector<real> fourier_legendre::lobatto_qwt;
 std::vector<std::array<real, NDIM>> fourier_legendre::qpt_3d;
 std::vector<simd_vector> fourier_legendre::transform_coefficient;
 std::vector<simd_vector> fourier_legendre::inverse_transform_coefficient;
+std::vector<std::vector<simd_vector>> fourier_legendre::dinverse_transform_coefficient_dx;
 std::vector<std::vector<simd_vector>> fourier_legendre::lobatto_inverse_transform_coefficient;
 std::vector<std::vector<simd_vector>> fourier_legendre::volume_transform_coefficient;
 std::vector<std::vector<simd_vector>> fourier_legendre::volume_inverse_transform_coefficient;
@@ -66,23 +67,23 @@ void fourier_legendre::allocate() {
 	const integer ML_size = (2 * DNMAX + 1) * (2 * DNMAX + 1) * (2 * DNMAX + 1);
 	rho_2M.resize(L2, simd_vector(real(0), P3));
 	L2_phi.resize(P3, simd_vector(real(0), L2));
-	M2M.resize(NVERTEX, std::vector<simd_vector>(L2, simd_vector(real(0), L2)));
-	L2L.resize(NVERTEX, std::vector<simd_vector>(L2, simd_vector(real(0), L2)));
-	M2L.resize(ML_size, std::vector<simd_vector>(L2, simd_vector(real(0), L2)));
+	M2M.resize(NVERTEX, std::vector < simd_vector > (L2, simd_vector(real(0), L2)));
+	L2L.resize(NVERTEX, std::vector < simd_vector > (L2, simd_vector(real(0), L2)));
+	M2L.resize(ML_size, std::vector < simd_vector > (L2, simd_vector(real(0), L2)));
 	P2P.resize((2 * DNMAX + 1) * (2 * DNMAX + 1) * (2 * DNMAX + 1),
-			std::vector<simd_vector>(P3, simd_vector(real(0), P3)));
+			std::vector < simd_vector > (P3, simd_vector(real(0), P3)));
 	qpt_3d.resize(P * P * P);
 	qpt.resize(P);
 	qwt.resize(P);
 	hires_qwt.resize(PHI);
 	hires_qpt.resize(PHI);
-	restrict_coefficients.resize(P3, std::vector<simd_vector>(NVERTEX, simd_vector(P3)));
-	prolong_coefficients.resize(P3, std::vector<simd_vector>(NVERTEX, simd_vector(P3)));
+	restrict_coefficients.resize(P3, std::vector < simd_vector > (NVERTEX, simd_vector(P3)));
+	prolong_coefficients.resize(P3, std::vector < simd_vector > (NVERTEX, simd_vector(P3)));
 	lobatto_qpt.resize(N_Lobatto);
 	lobatto_qwt.resize(N_Lobatto);
 	transform_coefficient.resize(P3);
-	surface_transform_coefficient.resize(NFACE, std::vector<simd_vector>(P3));
-	volume_transform_coefficient.resize(NDIM, std::vector<simd_vector>(P3));
+	surface_transform_coefficient.resize(NFACE, std::vector < simd_vector > (P3));
+	volume_transform_coefficient.resize(NDIM, std::vector < simd_vector > (P3));
 	for (integer i = 0; i != P3; ++i) {
 		transform_coefficient[i] = simd_vector(real(0), P * P * P);
 		for (integer fc = 0; fc != NFACE; ++fc) {
@@ -93,9 +94,10 @@ void fourier_legendre::allocate() {
 		}
 	}
 	inverse_transform_coefficient.resize(P * P * P);
-	lobatto_inverse_transform_coefficient.resize(NDIM, std::vector<simd_vector>(P * P * N_Lobatto));
-	surface_inverse_transform_coefficient.resize(NFACE, std::vector<simd_vector>(P * P));
-	volume_inverse_transform_coefficient.resize(NDIM, std::vector<simd_vector>(P * P * P));
+	lobatto_inverse_transform_coefficient.resize(NDIM, std::vector < simd_vector > (P * P * N_Lobatto));
+	surface_inverse_transform_coefficient.resize(NFACE, std::vector < simd_vector > (P * P));
+	volume_inverse_transform_coefficient.resize(NDIM, std::vector < simd_vector > (P * P * P));
+	dinverse_transform_coefficient_dx.resize(NDIM, std::vector < simd_vector > (P * P * P));
 	for (integer i = 0; i != P * P * N_Lobatto; ++i) {
 		for (integer dim = 0; dim != NDIM; ++dim) {
 			lobatto_inverse_transform_coefficient[dim][i] = simd_vector(real(0), P3);
@@ -103,10 +105,9 @@ void fourier_legendre::allocate() {
 	}
 	for (integer i = 0; i != P * P * P; ++i) {
 		inverse_transform_coefficient[i] = simd_vector(real(0), P3);
-		for (integer fc = 0; fc != NFACE; ++fc) {
-			for (integer dim = 0; dim != NDIM; ++dim) {
-				volume_inverse_transform_coefficient[dim][i] = simd_vector(real(0), P3);
-			}
+		for (integer dim = 0; dim != NDIM; ++dim) {
+			volume_inverse_transform_coefficient[dim][i] = simd_vector(real(0), P3);
+			dinverse_transform_coefficient_dx[dim][i] = simd_vector(real(0), P3);
 		}
 	}
 	for (integer i = 0; i != P * P; ++i) {
@@ -231,6 +232,9 @@ fourier_legendre::fourier_legendre() {
 								for (integer dim = 0; dim != NDIM; ++dim) {
 									volume_inverse_transform_coefficient[dim][i][p] += px[l] * py[m] * pz[n];
 								}
+								dinverse_transform_coefficient_dx[XDIM][i][p] += dpx_dx[l] * py[m] * pz[n];
+								dinverse_transform_coefficient_dx[YDIM][i][p] += px[l] * dpy_dy[m] * pz[n];
+								dinverse_transform_coefficient_dx[ZDIM][i][p] += px[l] * py[m] * dpz_dz[n];
 								volume_transform_coefficient[XDIM][p][i] += (dwx_dx * wy * wz) / (nx * ny * nz);
 								volume_transform_coefficient[YDIM][p][i] += (wx * dwy_dy * wz) / (nx * ny * nz);
 								volume_transform_coefficient[ZDIM][p][i] += (wx * wy * dwz_dz) / (nx * ny * nz);
@@ -400,10 +404,10 @@ fourier_legendre::fourier_legendre() {
 
 		printf("Computing spherical restrict and prolong coefficients...\n");
 		for (integer ci = 0; ci != NVERTEX; ++ci) {
-			std::array<real, NDIM> dist_m = { real(2 * ((ci >> 0) & 1) - 1), real(2 * ((ci >> 1) & 1) - 1), real(
-					2 * ((ci >> 2) & 1) - 1) };
-			std::array<real, NDIM> dist_l = { real(2 * ((ci >> 0) & 1) - 1), real(2 * ((ci >> 1) & 1) - 1), real(
-					2 * ((ci >> 2) & 1) - 1) };
+			std::array < real, NDIM> dist_m = {real(2 * ((ci >> 0) & 1) - 1), real(2 * ((ci >> 1) & 1) - 1), real(
+						2 * ((ci >> 2) & 1) - 1)};
+			std::array<real, NDIM> dist_l = {real(2 * ((ci >> 0) & 1) - 1), real(2 * ((ci >> 1) & 1) - 1), real(
+						2 * ((ci >> 2) & 1) - 1)};
 			for (integer d = 0; d != NDIM; ++d) {
 				dist_m[d] *= -real(1);
 				//			dist_l[d] /= +real(2);
@@ -439,7 +443,7 @@ fourier_legendre::fourier_legendre() {
 		}
 
 		printf("Computing spherical multipole interactions...\n");
-		std::array<real, NDIM> dist;
+		std::array < real, NDIM > dist;
 		for (integer di = -DNMAX; di <= DNMAX; ++di) {
 			dist[0] = real(2 * di);
 			for (integer dj = -DNMAX; dj <= DNMAX; ++dj) {
@@ -479,6 +483,7 @@ fourier_legendre::fourier_legendre() {
 			}
 		}
 
+		const real beta = real(1) / real(PHI);
 		printf("Computing gravity interaction coefficients...\n");
 		for (integer di = -DNMAX; di <= DNMAX; ++di) {
 			for (integer dj = -DNMAX; dj <= DNMAX; ++dj) {
@@ -511,7 +516,8 @@ fourier_legendre::fourier_legendre() {
 											const real w2 = (w2x * w2y * w2z);
 											const real r = std::sqrt(dx * dx + dy * dy + dz * dz);
 											if (r != real(0)) {
-												const real kernel = real(1) / r;
+												//								const real kernel = real(1) / std::sqrt(r * r + beta * beta);
+												const real kernel = real(1) / std::sqrt(r * r);
 												for (integer l1 = 0; l1 != P; ++l1) {
 													for (integer m1 = 0; m1 != P - l1; ++m1) {
 														for (integer n1 = 0; n1 != P - l1 - m1; ++n1) {
@@ -605,6 +611,14 @@ simd_vector fourier_legendre::volume_transform(dimension dim, const simd_vector&
 	return U_p;
 }
 
+simd_vector fourier_legendre::dinverse_transform_dx(dimension dim, const simd_vector& U_p) {
+	simd_vector U_h(P * P * P);
+	for (integer i = 0; i != P * P * P; ++i) {
+		U_h[i] = (dinverse_transform_coefficient_dx[dim][i] * U_p).sum();
+	}
+	return U_h;
+}
+
 simd_vector fourier_legendre::volume_inverse_transform(dimension dim, const simd_vector& U_p) {
 	simd_vector U_h(P * P * P);
 	for (integer i = 0; i != P * P * P; ++i) {
@@ -629,13 +643,33 @@ simd_vector fourier_legendre::surface_inverse_transform(face fc, const simd_vect
 	return U_h;
 }
 
-simd_vector fourier_legendre::p2p_transform(integer i, integer j, integer k, const simd_vector& p_in) {
-	simd_vector p_out(real(0), P3);
+simd_vector fourier_legendre::p2p_transform(integer i, integer j, integer k, const simd_vector& rho_p, real dx) {
+	simd_vector phi_p(real(0), P3);
+	const real dx3 = dx * dx * dx;
 	const integer index = (i + DNMAX) * (2 * DNMAX + 1) * (2 * DNMAX + 1) + (j + DNMAX) * (2 * DNMAX + 1) + (k + DNMAX);
 	for (integer p = 0; p != P3; ++p) {
-		p_out[p] += (P2P[index][p] * p_in).sum();
+		phi_p[p] += ((P2P[index][p] * (dx3 / dx)) * rho_p).sum();
 	}
-	return p_out;
+	return phi_p;
+}
+
+simd_vector fourier_legendre::l2p_transform(const simd_vector& l_in, real dx) {
+	simd_vector phi_out(P3);
+	simd_vector dx_np = std::pow(dx, +rpow_l);
+	for (integer p = 0; p != P3; ++p) {
+		phi_out[p] = (L2_phi[p] * (l_in * dx_np)).sum();
+	}
+	return phi_out;
+}
+
+simd_vector fourier_legendre::p2m_transform(const simd_vector& rho_in, real dx) {
+	simd_vector m_out(L2);
+	const real dx3 = dx * dx * dx;
+	simd_vector dx_np = std::pow(dx, +rpow_l);
+	for (integer l = 0; l != L2; ++l) {
+		m_out[l] = (rho_2M[l] * dx_np[l] * (rho_in * dx3)).sum();
+	}
+	return m_out;
 }
 
 simd_vector fourier_legendre::m2l_transform(integer i, integer j, integer k, const simd_vector& p_in, real dx) {
@@ -662,7 +696,7 @@ simd_vector fourier_legendre::m2m_transform(integer ci, const simd_vector& m_in,
 
 simd_vector fourier_legendre::l2l_transform(integer ci, const simd_vector& l_in, real dx) {
 	simd_vector l_out(real(0), L2);
-	dx = dx / real(2);
+//	dx = dx / real(2);
 	simd_vector dx_np = std::pow(dx, +rpow_l);
 	simd_vector dx_nm = std::pow(dx, -rpow_l);
 	simd_vector l2 = dx_np * l_in;
@@ -670,22 +704,6 @@ simd_vector fourier_legendre::l2l_transform(integer ci, const simd_vector& l_in,
 		l_out[l] += ((L2L[ci][l] * dx_nm[l]) * l2).sum();
 	}
 	return l_out;
-}
-
-simd_vector fourier_legendre::l2p_transform(const simd_vector& l_in) {
-	simd_vector phi_out(P3);
-	for (integer p = 0; p != P3; ++p) {
-		phi_out[p] = (L2_phi[p] * l_in).sum();
-	}
-	return phi_out;
-}
-
-simd_vector fourier_legendre::p2m_transform(const simd_vector& p_in) {
-	simd_vector m_out(L2);
-	for (integer l = 0; l != L2; ++l) {
-		m_out[l] = (rho_2M[l] * p_in).sum();
-	}
-	return m_out;
 }
 
 void fourier_legendre::write(const char* filename) {
@@ -703,6 +721,7 @@ void fourier_legendre::write(const char* filename) {
 	arc << lobatto_inverse_transform_coefficient;
 	arc << volume_transform_coefficient;
 	arc << volume_inverse_transform_coefficient;
+	arc << dinverse_transform_coefficient_dx;
 	arc << surface_transform_coefficient;
 	arc << surface_inverse_transform_coefficient;
 	arc << restrict_coefficients;
@@ -731,6 +750,7 @@ void fourier_legendre::read(const char* filename) {
 	arc >> lobatto_inverse_transform_coefficient;
 	arc >> volume_transform_coefficient;
 	arc >> volume_inverse_transform_coefficient;
+	arc >> dinverse_transform_coefficient_dx;
 	arc >> surface_transform_coefficient;
 	arc >> surface_inverse_transform_coefficient;
 	arc >> restrict_coefficients;

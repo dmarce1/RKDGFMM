@@ -161,7 +161,9 @@ void evalLocal(real rho, real alpha, real beta, complex *Ynm, complex *YnmTheta)
 		Ynm[nmn] = std::conj(Ynm[npn]);                           //  Use conjugate relation for m < 0
 		real p1 = p;                                              //  LMAXnm-1
 		p = x * (2 * m + 1) * p1;                                 //  LMAXnm using recurrence relation
-		YnmTheta[npn] = rhom * (p - (m + 1) * x * p1) / y * prefactor[npn] * eim;       // theta derivative of r^n * Ynm
+		if (y != real(0)) {
+			YnmTheta[npn] = rhom * (p - (m + 1) * x * p1) / y * prefactor[npn] * eim;   // theta derivative of r^n * Ynm
+		}
 		rhom /= rho;                                              //  rho^(-m-1)
 		real rhon = rhom;                                         //  rho^(-n-1)
 		for (int n = m + 1; n != LMAX; ++n) {                             //  Loop over n in Ynm
@@ -172,7 +174,9 @@ void evalLocal(real rho, real alpha, real beta, complex *Ynm, complex *YnmTheta)
 			real p2 = p1;                                           //   LMAXnm-2
 			p1 = p;                                                 //   LMAXnm-1
 			p = (x * (2 * n + 1) * p1 - (n + m) * p2) / (n - m + 1);               //   LMAXnm using recurrence relation
-			YnmTheta[npm] = rhon * ((n - m + 1) * p - (n + 1) * x * p1) / y * prefactor[npm] * eim;  // theta derivative
+			if (y != real(0)) {
+				YnmTheta[npm] = rhon * ((n - m + 1) * p - (n + 1) * x * p1) / y * prefactor[npm] * eim; // theta derivative
+			}
 			rhon /= rho;                                            //   rho^(-n-1)
 		}                                                         //  End loop over n in Ynm
 		pn = -pn * fact * y;                                      //  LMAXn

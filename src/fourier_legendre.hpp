@@ -32,6 +32,7 @@ private:
 	static std::vector<std::array<real, NDIM>> qpt_3d;
 	static std::vector<simd_vector> transform_coefficient;
 	static std::vector<simd_vector> inverse_transform_coefficient;
+	static std::vector<std::vector<simd_vector>> dinverse_transform_coefficient_dx;
 	static std::vector<std::vector<simd_vector>> lobatto_inverse_transform_coefficient;
 	static std::vector<std::vector<simd_vector>> volume_transform_coefficient;
 	static std::vector<std::vector<simd_vector>> volume_inverse_transform_coefficient;
@@ -60,6 +61,7 @@ public:
 	static real lobatto_edge_weight();
 	static simd_vector lobatto_inverse_transform(const simd_vector&, dimension);
 	static simd_vector volume_transform(dimension, const simd_vector&);
+	static simd_vector dinverse_transform_dx(dimension, const simd_vector&);
 	static simd_vector volume_inverse_transform(dimension, const simd_vector&);
 	static simd_vector surface_transform(face, const simd_vector&);
 	static simd_vector surface_inverse_transform(face, const simd_vector&);
@@ -67,12 +69,12 @@ public:
 	static const std::vector<real>& quadrature_weights();
 	static simd_vector prolong(const simd_vector&, integer);
 	static simd_vector _restrict(const simd_vector&, integer);
-	static simd_vector p2p_transform(integer, integer, integer, const simd_vector&);
+	static simd_vector p2p_transform(integer, integer, integer, const simd_vector&, real dx);
 	static simd_vector m2l_transform(integer, integer, integer, const simd_vector&, real dx);
 	static simd_vector m2m_transform(integer, const simd_vector&, real dx);
 	static simd_vector l2l_transform(integer, const simd_vector&, real dx);
-	static simd_vector l2p_transform(const simd_vector&);
-	static simd_vector p2m_transform(const simd_vector&);
+	static simd_vector l2p_transform(const simd_vector&, real dx);
+	static simd_vector p2m_transform(const simd_vector&, real dx);
 };
 
 #endif /* FOURIER_LEGENDRE_HPP_ */

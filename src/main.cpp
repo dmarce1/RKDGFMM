@@ -27,16 +27,16 @@ int main(void) {
 	real dx = real(2) / real(NX);
 	g.enforce_boundaries(0);
 	real amax = g.enforce_positivity(0);
-	real output_dt = 1.0e-1;
+	real output_dt = 1.0e-2;
 	integer output_cnt = 0;
 	g.compute_fmm(0);
 	g.output("X.0.silo");
 	++output_cnt;
 
-
+	g.diagnostics();
+	printf("t = 0.0 *\n");
 	while (t < TMAX) {
 		dt = dx / amax * cfl[NRK - 1];
-		printf("t = 0.0 ");
 		const real tremain = output_cnt * output_dt - t;
 		dt = tremain / real(integer(tremain / dt) + 1);
 		printf("t = %e dt = %e ", double(t + dt), double(dt));
