@@ -29,8 +29,10 @@ simd_vector minmod(const simd_vector& a, const simd_vector& b) {
 }
 
 grid::grid() :
-		h(real(1) / real(INX)), hinv(real(INX)) {
+		h(real(1) / real(INX)), hinv(real(INX)), gx_h(g_h[XDIM]), gy_h(g_h[YDIM]), gz_h(g_h[ZDIM]) {
+
 	U_p.resize(NRK + 1, std::vector < conserved_vars > (N3, conserved_vars(P3)));
+	U_h_analytic.resize(N3, conserved_vars(G3));
 	F_p.resize(NFACE,
 			std::vector < std::vector < simd_vector >> (N3, std::vector < simd_vector > (NF, simd_vector(P3))));
 	S_p.resize(N3, std::vector < simd_vector > (NF, simd_vector(P3)));
@@ -40,19 +42,15 @@ grid::grid() :
 	for (integer inx = INX; inx > 1; inx /= 2) {
 		++nlevel;
 	}
-//	phi_p.resize(NX * NX * NX, simd_vector(P3));
-//	gx_p.resize(NX * NX * NX, simd_vector(P3));
-//	gy_p.resize(NX * NX * NX, simd_vector(P3));
-//	gz_p.resize(NX * NX * NX, simd_vector(P3));
-	phi_h.resize(NX * NX * NX, simd_vector(G3));
-	gx_h.resize(NX * NX * NX, simd_vector(G3));
-	gy_h.resize(NX * NX * NX, simd_vector(G3));
-	gz_h.resize(NX * NX * NX, simd_vector(G3));
+	phi_h.resize(NX * NX * NX, simd_vector(real(0), G3));
+	gx_h.resize(NX * NX * NX, simd_vector(real(0), G3));
+	gy_h.resize(NX * NX * NX, simd_vector(real(0), G3));
+	gz_h.resize(NX * NX * NX, simd_vector(real(0), G3));
 	phi_l.resize(nlevel);
-	phi_p_analytic.resize(NX * NX * NX, simd_vector(P3));
-	gx_h_analytic.resize(NX * NX * NX, simd_vector(G3));
-	gy_h_analytic.resize(NX * NX * NX, simd_vector(G3));
-	gz_h_analytic.resize(NX * NX * NX, simd_vector(G3));
+	phi_p_analytic.resize(NX * NX * NX, simd_vector(real(0), P3));
+	gx_h_analytic.resize(NX * NX * NX, simd_vector(real(0), G3));
+	gy_h_analytic.resize(NX * NX * NX, simd_vector(real(0), G3));
+	gz_h_analytic.resize(NX * NX * NX, simd_vector(real(0), G3));
 	rho_l.resize(nlevel);
 	nlevel = 0;
 	for (integer inx = INX; inx > 1; inx /= 2) {
@@ -175,6 +173,7 @@ real grid::enforce_positivity(integer rk) {
 			}
 		}
 	}
+
 	return amax / cfl;
 }
 
@@ -209,11 +208,11 @@ void grid::enforce_boundaries(integer rk) {
 					}
 				}
 			}
-			if (u[iiia][s_i + XDIM][0] < real(0)) {
+			if (u[iiia][s_i + XDIM][0] > real(0)) {
 				u[im1a][s_i + XDIM][0] = real(0);
 				u[im2a][s_i + XDIM][0] = real(0);
 			}
-			if (u[iiib][s_i + XDIM][0] > real(0)) {
+			if (u[iiib][s_i + XDIM][0] < real(0)) {
 				u[ip1b][s_i + XDIM][0] = real(0);
 				u[ip2b][s_i + XDIM][0] = real(0);
 			}
@@ -248,11 +247,11 @@ void grid::enforce_boundaries(integer rk) {
 					}
 				}
 			}
-			if (u[jjja][s_i + YDIM][0] < real(0)) {
+			if (u[jjja][s_i + YDIM][0] > real(0)) {
 				u[jm1a][s_i + YDIM][0] = real(0);
 				u[jm2a][s_i + YDIM][0] = real(0);
 			}
-			if (u[jjjb][s_i + YDIM][0] > real(0)) {
+			if (u[jjjb][s_i + YDIM][0] < real(0)) {
 				u[jp1b][s_i + YDIM][0] = real(0);
 				u[jp2b][s_i + YDIM][0] = real(0);
 			}
@@ -286,11 +285,11 @@ void grid::enforce_boundaries(integer rk) {
 					}
 				}
 			}
-			if (u[kkka][s_i + ZDIM][0] < real(0)) {
+			if (u[kkka][s_i + ZDIM][0] > real(0)) {
 				u[km1a][s_i + ZDIM][0] = real(0);
 				u[km2a][s_i + ZDIM][0] = real(0);
 			}
-			if (u[kkkb][s_i + ZDIM][0] > real(0)) {
+			if (u[kkkb][s_i + ZDIM][0] < real(0)) {
 				u[kp1b][s_i + ZDIM][0] = real(0);
 				u[kp2b][s_i + ZDIM][0] = real(0);
 			}
@@ -299,15 +298,20 @@ void grid::enforce_boundaries(integer rk) {
 }
 
 void grid::project(integer rk) {
+	const auto u0_p = U_p[rk];
 	auto& u_p = U_p[rk];
 	auto ux_p = U_p[rk];
 	auto uy_p = U_p[rk];
 	auto uz_p = U_p[rk];
 	for (integer iii = 0; iii != N3; ++iii) {
 		if (!is_on_edge[iii]) {
-			apply_limiter(ux_p[iii], u_p[iii + dx_i], u_p[iii - dx_i], XDIM);
-			apply_limiter(uy_p[iii], u_p[iii + dy_i], u_p[iii - dy_i], YDIM);
-			apply_limiter(uz_p[iii], u_p[iii + dz_i], u_p[iii - dz_i], ZDIM);
+			auto rho_h = Fourier.inverse_transform(u_p[iii].rho());
+			auto fgx = Fourier.transform(rho_h * gx_h[iii]);
+			auto fgy = Fourier.transform(rho_h * gy_h[iii]);
+			auto fgz = Fourier.transform(rho_h * gz_h[iii]);
+			apply_limiter(ux_p[iii], u_p[iii + dx_i], u_p[iii - dx_i], fgx, XDIM);
+			apply_limiter(uy_p[iii], u_p[iii + dy_i], u_p[iii - dy_i], fgy, YDIM);
+			apply_limiter(uz_p[iii], u_p[iii + dz_i], u_p[iii - dz_i], fgz, ZDIM);
 		}
 	}
 	for (integer iii = 0; iii != N3; ++iii) {
@@ -317,6 +321,13 @@ void grid::project(integer rk) {
 			}
 		}
 	}
+	for (integer iii = 0; iii != N3; ++iii) {
+		const auto rho_before_p = u0_p[iii].rho();
+		const auto rho_after_p = u_p[iii].rho();
+		const auto drho_h = Fourier.inverse_transform(rho_after_p - rho_before_p);
+		u_p[iii].egas() -= Fourier.transform(drho_h * phi_h[iii]);
+	}
+
 }
 
 void grid::compute_flux(integer rk) {
@@ -340,6 +351,7 @@ void grid::compute_flux(integer rk) {
 					Usm_h[f] = Fourier.surface_inverse_transform(fcp, u_p[i - d_i[dim]][f]);
 					Usp_h[f] = Fourier.surface_inverse_transform(fcm, u_p[i][f]);
 				}
+
 				const auto Vsp_h = Usp_h.to_primitive();
 				const auto Vsm_h = Usm_h.to_primitive();
 				const real ap = simd_vector(Vsp_h.c() + std::abs(Vsp_h.v(dimension(dim)))).max();
@@ -347,39 +359,54 @@ void grid::compute_flux(integer rk) {
 				const real a = std::max(ap, am);
 				auto fp = Usp_h.flux(Vsp_h, dimension(dim));
 				auto fm = Usm_h.flux(Vsm_h, dimension(dim));
+				const auto phi_m_p = Fourier.transform(phi_h[i - d_i[dim]]);
+				const auto phi_p_p = Fourier.transform(phi_h[i]);
+				const auto phi_sm_h = Fourier.surface_inverse_transform(fcp, phi_m_p);
+				const auto phi_sp_h = Fourier.surface_inverse_transform(fcm, phi_p_p);
+				const simd_vector phi_f = (phi_sm_h + phi_sp_h) * hf;
+				//		auto surface_flux = HLLC_flux(Usm_h, Usp_h, phi_f, dimension(dim));
+
 				std::vector<simd_vector> surface_flux(NF, simd_vector (G2));
 				for (integer f = 0; f != NF; ++f) {
 					surface_flux[f] = ((fp[f] + fm[f]) - a * (Usp_h[f] - Usm_h[f])) * hf;
 				}
+
 				for (integer f = 0; f != NF; ++f) {
 					F_p[fcp][i - d_i[dim]][f] = Fourier.surface_transform(fcp, surface_flux[f]) * hinv;
 					F_p[fcm][i][f] = Fourier.surface_transform(fcm, surface_flux[f]) * hinv;
 				}
+
+				/***********************************************************************************/
+				simd_vector phi_flux = phi_f * (Usp_h[s_i + dim] + Usm_h[s_i + dim] - a * (Usp_h[rho_i] - Usm_h[rho_i]))
+						* hf;
+				F_p[fcp][i - d_i[dim]][egas_i] += Fourier.surface_transform(fcp, phi_flux) * hinv;
+				F_p[fcm][i][egas_i] += Fourier.surface_transform(fcm, phi_flux) * hinv;
+				/***************************************************************************************/
+
 			}
-		}
-		for (integer i = 0; i != N3; ++i) {
 			if (is_interior[i]) {
 				for (integer f = 0; f != NF; ++f) {
 					Uv_h[f] = Fourier.volume_inverse_transform(dimension(dim), u_p[i][f]);
 				}
 				const auto Vv_h = Uv_h.to_primitive();
 				auto volume_flux = Uv_h.flux(Vv_h, dimension(dim));
-				auto rho_h = Fourier.inverse_transform(u_p[i].rho());
-				auto sx_h = Fourier.inverse_transform(u_p[i].s(XDIM));
-				auto sy_h = Fourier.inverse_transform(u_p[i].s(YDIM));
-				auto sz_h = Fourier.inverse_transform(u_p[i].s(ZDIM));
-				//		auto gx_h = Fourier.inverse_transform(gx_p[i]);
-				//		auto gy_h = Fourier.inverse_transform(gy_p[i]);
-				//		auto gz_h = Fourier.inverse_transform(gz_p[i]);
-				S_p[i][s_i + XDIM] += Fourier.transform(rho_h * gx_h[i]);
-				S_p[i][s_i + YDIM] += Fourier.transform(rho_h * gy_h[i]);
-				S_p[i][s_i + ZDIM] += Fourier.transform(rho_h * gz_h[i]);
-				S_p[i][egas_i] += Fourier.transform(sx_h * gx_h[i]);
-				S_p[i][egas_i] += Fourier.transform(sy_h * gy_h[i]);
-				S_p[i][egas_i] += Fourier.transform(sz_h * gz_h[i]);
 				for (integer f = 0; f != NF; ++f) {
 					S_p[i][f] += Fourier.volume_transform(dimension(dim), volume_flux[f]) * hinv;
 				}
+
+				/***********************************************************************************/
+				const auto phi_vflux = phi_h[i] * Uv_h[s_i + dim];
+				S_p[i][egas_i] += Fourier.volume_transform(dimension(dim), phi_vflux) * hinv;
+				/***************************************************************************************/
+				/****************************************************************************/
+				auto rho_h = Fourier.inverse_transform(u_p[i].rho());
+				//	auto s_h = Fourier.inverse_transform(u_p[i].s(dimension(dim)));
+				S_p[i][s_i + dim] += Fourier.transform(rho_h * g_h[dimension(dim)][i]);
+				//	auto e_p = Fourier.transform(s_h * gx_h[dimension(dim)][i]);
+				//	e_p[0] = real(0);
+				//	S_p[i][egas_i] += e_p;
+				/********************************************************************************/
+
 			}
 		}
 	}
@@ -390,12 +417,18 @@ void grid::compute_du(integer rk) {
 	for (integer i = 0; i != N3; ++i) {
 		if (is_interior[i]) {
 			for (integer f = 0; f != NF; ++f) {
-				du_dt_p[i][f] = S_p[i][f];
-				du_dt_p[i][f] -= (F_p[XP][i][f] - F_p[XM][i][f]);
-				du_dt_p[i][f] -= (F_p[YP][i][f] - F_p[YM][i][f]);
-				du_dt_p[i][f] -= (F_p[ZP][i][f] - F_p[ZM][i][f]);
+				const simd_vector src = S_p[i][f];
+				const simd_vector flux = F_p[XP][i][f] - F_p[XM][i][f] + F_p[YP][i][f] - F_p[YM][i][f] + F_p[ZP][i][f]
+						- F_p[ZM][i][f];
+				du_dt_p[i][f] = src - flux;
+//				if (f == s_i && std::abs(flux[0]) > 1.0e-3)
+//					printf("%e %e %e \n", src[0], -flux[0], -src[0] / flux[0]);
 			}
 		}
+	}
+	for (integer i = 0; i != N3; ++i) {
+		const auto ep = Fourier.transform((Fourier.inverse_transform(du_dt_p[i][rho_i]) * phi_h[i]));
+		du_dt_p[i][egas_i] -= ep;
 	}
 }
 
@@ -424,7 +457,7 @@ void grid::compute_next_u(integer rk, real dt) {
 }
 
 void grid::apply_limiter(conserved_vars& U0_p, const conserved_vars& UR_p, const conserved_vars& UL_p,
-		dimension dim) const {
+		const simd_vector fg_p, dimension dim) const {
 	const dimension i1 = dim;
 	const dimension i2 = ((dim == XDIM ? YDIM : XDIM));
 	const dimension i3 = ((dim == ZDIM ? YDIM : ZDIM));
@@ -433,7 +466,6 @@ void grid::apply_limiter(conserved_vars& U0_p, const conserved_vars& UR_p, const
 	const real v = U0_p.s(i2)[0] / rho;
 	const real w = U0_p.s(i3)[0] / rho;
 	real ei = (U0_p.egas()[0] - rho * (u * u + v * v + w * w) / real(2));
-	ei = std::max(ei, real(0));
 	assert(U0_p.tau()[0] > real(0));
 	assert(U0_p.rho()[0] > real(0));
 	if (ei < dual_energy_switch2 * U0_p.egas()[0]) {
@@ -444,11 +476,12 @@ void grid::apply_limiter(conserved_vars& U0_p, const conserved_vars& UR_p, const
 	const real h = (p + U0_p.egas()[0]) / rho;
 
 	auto char_decomp =
-			[&](simd_vector& dC, const real& drho, const real& ds1, const real& ds2, const real& ds3, const real& degas, const real& dtau) {
+			[&](simd_vector& dC, const real& drho, const real& ds1, const real& ds2, const real& ds3, const real& degas, const real& dtau, const real& fg) {
 				const auto du = (ds1 - u * drho) / rho;
 				const auto dv = (ds2 - v * drho) / rho;
 				const auto dw = (ds3 - w * drho) / rho;
-				const auto dp = (fgamma - real(1)) * (degas - rho * (u * du + v * dv + w * dw) - drho * (u * u + v * v + w * w) / real(2));
+				auto dp = (fgamma - real(1)) * (degas - rho * (u * du + v * dv + w * dw) - drho * (u * u + v * v + w * w) / real(2));
+				dp -= fg;
 				dC[0] = drho - dp / (c * c);
 				dC[1] = dv;
 				dC[2] = dw;
@@ -458,7 +491,10 @@ void grid::apply_limiter(conserved_vars& U0_p, const conserved_vars& UR_p, const
 			};
 
 	auto char_recomp =
-			[&](const simd_vector& dC, real& drho, real& ds1, real& ds2, real& ds3, real& degas, real& dtau) {
+			[&](simd_vector& dC, real& drho, real& ds1, real& ds2, real& ds3, real& degas, real& dtau, real fg) {
+				dC[0] -= fg / (c*c);
+				dC[3] += fg/(rho*c);
+				dC[4] -= fg/(rho*c);
 				drho = dC[0] + rho / (real(2) * c) * (dC[3] - dC[4]);
 				ds1 = dC[0] * u + rho / (real(2) * c) * (dC[3] * (u + c) - dC[4] * (u - c));
 				ds2 = dC[0] * v + rho * dC[1] + rho * v / (real(2) * c) * (dC[3]- dC[4]);
@@ -489,13 +525,13 @@ void grid::apply_limiter(conserved_vars& U0_p, const conserved_vars& UR_p, const
 				const integer p1 = Fourier.pindex(lp1, mp1, np1);
 				const real norm = real(2 * l3[i1] + 1);
 				char_decomp(C0, U0_p.rho()[p1], U0_p.s(i1)[p1], U0_p.s(i2)[p1], U0_p.s(i3)[p1], U0_p.egas()[p1],
-						U0_p.tau()[p1]);
+						U0_p.tau()[p1], fg_p[p0]);
 				char_decomp(CR, //
 						(UR_p.rho()[p0] - U0_p.rho()[p0]), //
 						(UR_p.s(i1)[p0] - U0_p.s(i1)[p0]), //
 						(UR_p.s(i2)[p0] - U0_p.s(i2)[p0]), //
 						(UR_p.s(i3)[p0] - U0_p.s(i3)[p0]), //
-						(UR_p.egas()[p0] - U0_p.egas()[p0]), (UR_p.tau()[p0] - U0_p.tau()[p0]));
+						(UR_p.egas()[p0] - U0_p.egas()[p0]), (UR_p.tau()[p0] - U0_p.tau()[p0]), fg_p[p0]);
 				char_decomp(
 						CP, //
 						(UR_p.rho()[p0] - U0_p.rho()[p0]) - norm * UR_p.rho()[p1], //
@@ -503,13 +539,13 @@ void grid::apply_limiter(conserved_vars& U0_p, const conserved_vars& UR_p, const
 						(UR_p.s(i2)[p0] - U0_p.s(i2)[p0]) - norm * UR_p.s(i2)[p1], //
 						(UR_p.s(i3)[p0] - U0_p.s(i3)[p0]) - norm * UR_p.s(i3)[p1], //
 						(UR_p.egas()[p0] - U0_p.egas()[p0]) - norm * UR_p.egas()[p1],
-						(UR_p.tau()[p0] - U0_p.tau()[p0]) - norm * UR_p.tau()[p1]);
+						(UR_p.tau()[p0] - U0_p.tau()[p0]) - norm * UR_p.tau()[p1], fg_p[p0]);
 				char_decomp(CL, //
 						(U0_p.rho()[p0] - UL_p.rho()[p0]), //
 						(U0_p.s(i1)[p0] - UL_p.s(i1)[p0]), //
 						(U0_p.s(i2)[p0] - UL_p.s(i2)[p0]), //
 						(U0_p.s(i3)[p0] - UL_p.s(i3)[p0]), //
-						(U0_p.egas()[p0] - UL_p.egas()[p0]), (U0_p.tau()[p0] - UL_p.tau()[p0]));
+						(U0_p.egas()[p0] - UL_p.egas()[p0]), (U0_p.tau()[p0] - UL_p.tau()[p0]), fg_p[p0]);
 				char_decomp(
 						CM, //
 						(U0_p.rho()[p0] - UL_p.rho()[p0]) - norm * UL_p.rho()[p1], //
@@ -517,7 +553,7 @@ void grid::apply_limiter(conserved_vars& U0_p, const conserved_vars& UR_p, const
 						(U0_p.s(i2)[p0] - UL_p.s(i2)[p0]) - norm * UL_p.s(i2)[p1], //
 						(U0_p.s(i3)[p0] - UL_p.s(i3)[p0]) - norm * UL_p.s(i3)[p1], //
 						(U0_p.egas()[p0] - UL_p.egas()[p0]) - norm * UL_p.egas()[p1],
-						(U0_p.tau()[p0] - UL_p.tau()[p0]) - norm * UL_p.tau()[p1]);
+						(U0_p.tau()[p0] - UL_p.tau()[p0]) - norm * UL_p.tau()[p1], fg_p[p0]);
 				for (integer f = 0; f != NF; ++f) {
 					const real clim1 = minmod(CL[f], CR[f]) / norm;
 					const real clim2 = minmod(CP[f], CM[f]) / norm;
@@ -525,7 +561,7 @@ void grid::apply_limiter(conserved_vars& U0_p, const conserved_vars& UR_p, const
 					C0[f] = std::min(C0[f], std::max(clim1, clim2));
 				}
 				char_recomp(C0, U0_p.rho()[p1], U0_p.s(i1)[p1], U0_p.s(i2)[p1], U0_p.s(i3)[p1], U0_p.egas()[p1],
-						U0_p.tau()[p1]);
+						U0_p.tau()[p1], fg_p[p0]);
 
 			}
 		}
@@ -550,16 +586,32 @@ void grid::initialize(std::function<std::vector<real>(real, real, real)>&& func)
 			for (integer f = 0; f != NF; ++f) {
 				U[f][g] = this_u[f];
 			}
-			star_force(x,y,z, gx_h_analytic[i][g], gy_h_analytic[i][g], gz_h_analytic[i][g]);
-		}
-		for (integer f = 0; f != NF; ++f) {
-			U_p[0][i][f] = Fourier.transform(U[f]);
-		}
-		if( i % (NX*NX) == 0 ) {
-			printf( ".");
+//			star_force(x,y,z, gx_h_analytic[i][g], gy_h_analytic[i][g], gz_h_analytic[i][g]);
+	}
+	for (integer f = 0; f != NF; ++f) {
+		U_p[0][i][f] = Fourier.transform(U[f]);
+	}
+	if( i % (NX*NX) == 0 ) {
+		printf( ".");
+	}
+}
+printf( "\nDone\n");
+}
+
+void grid::compute_analytic(std::function<std::vector<real>(real, real, real, real)>&& func, real t) {
+	const auto quad_point = Fourier.quadrature_points();
+	for (integer i = 0; i != N3; ++i) {
+		fflush(stdout);
+		for (integer g = 0; g != G3; ++g) {
+			const real x = cell_x[i] + quad_point[g][XDIM] * h;
+			const real y = cell_y[i] + quad_point[g][YDIM] * h;
+			const real z = cell_z[i] + quad_point[g][ZDIM] * h;
+			const auto this_u = func(x, y, z, t);
+			for (integer f = 0; f != NF; ++f) {
+				U_h_analytic[i][f][g] = this_u[f];
+			}
 		}
 	}
-	printf( "\nDone\n");
 }
 
 struct node_point {
@@ -659,16 +711,19 @@ void grid::output(const char* filename) const {
 	DBPutUcdmesh(db, "mesh", int(NDIM), coord_names, node_coords.data(), nnodes, nzones, "zones", nullptr, DB_DOUBLE,
 			nullptr);
 
-	const char* field_names[] = { "rho", "egas", "tau", "sx", "sy", "sz", "phi", "gx", "gy", "gz", "phi_analytic",
-			"gx_analytic", "gy_analytic", "gz_analytic" };
+	const char* field_names[] = { "rho", "egas", "tau", "sx", "sy", "sz", "phi", "gx", "gy", "gz", "rho_analytic",
+			"egas_analytic", "tau_analytic", "sx_analytic", "sy_analytic", "sz_analytic", "phi_analytic", "gx_analytic",
+			"gy_analytic", "gz_analytic" };
 	constexpr
 	integer I3 = INX * INX * INX;
 	std::vector<double> rho(I3 * G3), sx(I3 * G3), sy(I3 * G3), sz(I3 * G3), egas(I3 * G3), tau(I3 * G3), phi(I3 * G3),
 			gx(I3 * G3), gy(I3 * G3), gz(I3 * G3), phi_analytic(I3 * G3), gx_analytic(I3 * G3), gy_analytic(I3 * G3),
-			gz_analytic(I3 * G3);
-	std::array<double*, NF + 2 + 2 * NDIM> u_data = { rho.data(), sx.data(), sy.data(), sz.data(), egas.data(),
-			tau.data(), phi.data(), gx.data(), gy.data(), gz.data(), phi_analytic.data(), gx_analytic.data(),
-			gy_analytic.data(), gz_analytic.data() };
+			gz_analytic(I3 * G3), rho_analytic(I3 * G3), sx_analytic(I3 * G3), sy_analytic(I3 * G3), sz_analytic(
+					I3 * G3), egas_analytic(I3 * G3), tau_analytic(I3 * G3);
+	std::array<double*, 2 * (NF + 1 + NDIM)> u_data = { rho.data(), sx.data(), sy.data(), sz.data(), egas.data(),
+			tau.data(), phi.data(), gx.data(), gy.data(), gz.data(), rho_analytic.data(), egas_analytic.data(),
+			tau_analytic.data(), sx_analytic.data(), sy_analytic.data(), sz_analytic.data(), phi_analytic.data(),
+			gx_analytic.data(), gy_analytic.data(), gz_analytic.data() };
 	index = 0;
 	for (integer i = BW; i != NX - BW; ++i) {
 		for (integer j = BW; j != NX - BW; ++j) {
@@ -678,28 +733,25 @@ void grid::output(const char* filename) const {
 					auto U_h = Fourier.inverse_transform(U_p[rk][iii][f]);
 					for (integer ggg = 0; ggg != G3; ++ggg) {
 						u_data[f][index + ggg] = U_h[ggg];
+						u_data[f + (NF + 1 + NDIM)][index + ggg] = U_h_analytic[iii][f][ggg];
 					}
 				}
-				//auto phi_h = Fourier.inverse_transform(phi_p[iii]);
-				//	auto gx_h = Fourier.inverse_transform(gx_p[iii]);
-				//	auto gy_h = Fourier.inverse_transform(gy_p[iii]);
-				//	auto gz_h = Fourier.inverse_transform(gz_p[iii]);
 				auto phi_h_analytic = Fourier.inverse_transform(phi_p_analytic[iii]);
 				for (integer ggg = 0; ggg != G3; ++ggg) {
 					u_data[NF][index + ggg] = phi_h[iii][ggg];
 					u_data[NF + 1 + XDIM][index + ggg] = gx_h[iii][ggg];
 					u_data[NF + 1 + YDIM][index + ggg] = gy_h[iii][ggg];
 					u_data[NF + 1 + ZDIM][index + ggg] = gz_h[iii][ggg];
-					u_data[NF + 1 + NDIM][index + ggg] = phi_h_analytic[ggg];
-					u_data[NF + 2 + NDIM + XDIM][index + ggg] = gx_h_analytic[iii][ggg];
-					u_data[NF + 2 + NDIM + YDIM][index + ggg] = gy_h_analytic[iii][ggg];
-					u_data[NF + 2 + NDIM + ZDIM][index + ggg] = gz_h_analytic[iii][ggg];
+					u_data[2 * NF + 1 + NDIM][index + ggg] = phi_h_analytic[ggg];
+					u_data[2 * NF + 2 + NDIM + XDIM][index + ggg] = gx_h_analytic[iii][ggg];
+					u_data[2 * NF + 2 + NDIM + YDIM][index + ggg] = gy_h_analytic[iii][ggg];
+					u_data[2 * NF + 2 + NDIM + ZDIM][index + ggg] = gz_h_analytic[iii][ggg];
 				}
 				index += G3;
 			}
 		}
 	}
-	for (int f = 0; f != NF + 2 + 2 * NDIM; ++f) {
+	for (int f = 0; f != 2 * (NF + 1 + NDIM); ++f) {
 		DBPutUcdvar1(db, field_names[f], "mesh", u_data[f], nzones, nullptr, 0, DB_DOUBLE, DB_ZONECENT, nullptr);
 	}
 
@@ -848,13 +900,15 @@ void grid::compute_force(integer rk) {
 	}
 }
 
-void grid::diagnostics() {
+void grid::diagnostics(real t) {
 	real sum = real(0);
 	real norm = real(0);
-	printf("\n");
+//printf("\n");
 	real fx = real(0);
 	real fy = real(0);
 	real fz = real(0);
+	real esum = real(0);
+	real msum = real(0);
 	for (integer iii = 0; iii != N3; ++iii) {
 		if (is_interior[iii]) {
 			auto numerical = gx_h[iii];
@@ -864,14 +918,19 @@ void grid::diagnostics() {
 			norm += (gx_h[iii] * gx_h[iii]).sum();
 			sum += Fourier.transform(l2)[0];
 
-			auto rho_h = Fourier.inverse_transform((U_p[0][iii].rho()));
-
-			fx += Fourier.transform(rho_h * gx_h[iii])[0] * real(8) * h * h * h;
-			fy += Fourier.transform(rho_h * gy_h[iii])[0] * real(8) * h * h * h;
-			fz += Fourier.transform(rho_h * gz_h[iii])[0] * real(8) * h * h * h;
+			const auto rho_h = Fourier.inverse_transform((U_p[0][iii].rho()));
+			const real dV = real(8) * h * h * h;
+			fx += Fourier.transform(rho_h * gx_h[iii])[0] * dV;
+			fy += Fourier.transform(rho_h * gy_h[iii])[0] * dV;
+			fz += Fourier.transform(rho_h * gz_h[iii])[0] * dV;
+			esum += (U_p[0][iii].egas()[0] + Fourier.transform(phi_h[iii] * rho_h)[0] / real(2)) * dV;
+			msum += Fourier.transform(rho_h)[0] * dV;
 		}
 	}
-	printf("Error sum = %e fx = %e fy = %e fz = %e \n", std::sqrt(sum / norm), fx, fy, fz);
+	FILE* fp = fopen("diag.dat", "at");
+//	printf("Error sum = %e fx = %e fy = %e fz = %e \n", std::sqrt(sum / norm), fx, fy, fz);
+	fprintf(fp, "%e %e %e\n", t, esum, msum);
+	fclose(fp);
 
 }
 

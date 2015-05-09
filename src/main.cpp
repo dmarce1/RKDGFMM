@@ -7,10 +7,11 @@
 
 #include "grid.hpp"
 #include "rk.hpp"
-#include "initial.hpp"
+#include "tests/initial.hpp"
+#include "tests/tests.hpp"
 #include <fenv.h>
 
-#define TMAX 2.5
+#define TMAX 10.0
 
 int main(void) {
 #ifndef NDEBUG
@@ -27,15 +28,16 @@ int main(void) {
 	real dx = real(2) / real(NX);
 	g.enforce_boundaries(0);
 	real amax = g.enforce_positivity(0);
-	real output_dt = 1.0e-2;
+	real output_dt = 2.0e-2;
 	integer output_cnt = 0;
 	g.compute_fmm(0);
+	g.compute_analytic(sod_shock_tube_analytic, real(0));
 	g.output("X.0.silo");
 	++output_cnt;
 
-	g.diagnostics();
 	printf("t = 0.0 *\n");
 	while (t < TMAX) {
+		g.diagnostics(t);
 		dt = dx / amax * cfl[NRK - 1];
 		const real tremain = output_cnt * output_dt - t;
 		dt = tremain / real(integer(tremain / dt) + 1);
@@ -47,8 +49,8 @@ int main(void) {
 			g.compute_next_u(rk, dt);
 			g.enforce_boundaries(rk2);
 			g.project(rk2);
-			g.compute_fmm(rk2);
 			amax = g.enforce_positivity(rk2);
+			g.compute_fmm(rk2);
 		}
 		t += dt;
 		if (output_cnt <= integer(t / output_dt + 1.0e-6)) {
@@ -57,6 +59,7 @@ int main(void) {
 				abort();
 			}
 			printf("*");
+			g.compute_analytic(sod_shock_tube_analytic, t);
 			g.output(tmp_ptr);
 			++output_cnt;
 			free(tmp_ptr);

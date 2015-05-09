@@ -508,7 +508,6 @@ fourier_legendre::fourier_legendre() {
 			}
 		}
 
-		const real beta = real(1) / real(PHI);
 		printf("Computing gravity interaction coefficients...\n");
 		for (integer di = -DNMAX; di <= DNMAX; ++di) {
 			for (integer dj = -DNMAX; dj <= DNMAX; ++dj) {

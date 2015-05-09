@@ -16,9 +16,9 @@ using integer = long long int;
 
 #define NOGRAVITY
 
-static constexpr integer P = 5;
-static constexpr integer NRK = 3;
-static constexpr integer INX = 32;
+static constexpr integer P = 2;
+static constexpr integer NRK = 2;
+static constexpr integer INX = 16;
 
 static constexpr integer LMAX = P+1;
 static constexpr integer L2 = LMAX*LMAX;
@@ -52,7 +52,7 @@ static constexpr integer h_i = 4;
 static constexpr integer c_i = 5;
 static constexpr integer v_i = 6;
 
-#include "initial.hpp"
+#include "tests/initial.hpp"
 
 enum dimension {
 	XDIM = 0, YDIM = 1, ZDIM = 2

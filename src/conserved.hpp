@@ -55,4 +55,6 @@ public:
 	real max_signal_speed() const;
 };
 
+std::vector<simd_vector> HLLC_flux(const conserved_vars& UL, const conserved_vars& UR, const simd_vector&, dimension dim);
+
 #endif /* CONSERVED_HPP_ */

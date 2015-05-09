@@ -26,18 +26,16 @@ private:
 	std::vector<simd_vector> gy_h_analytic;
 	std::vector<simd_vector> gz_h_analytic;
 
-//	std::vector<simd_vector> phi_p;
-//	std::vector<simd_vector> gx_p;
-//	std::vector<simd_vector> gy_p;
-//	std::vector<simd_vector> gz_p;
-
 	std::vector<simd_vector> phi_h;
-	std::vector<simd_vector> gx_h;
-	std::vector<simd_vector> gy_h;
-	std::vector<simd_vector> gz_h;
+	std::array<std::vector<simd_vector>,NDIM> g_h;
+	std::vector<simd_vector>& gx_h;
+	std::vector<simd_vector>& gy_h;
+	std::vector<simd_vector>& gz_h;
+
 
 	std::vector<std::vector<simd_vector>> phi_l;
 	std::vector<std::vector<conserved_vars>> U_p;
+	std::vector<conserved_vars> U_h_analytic;
 	std::vector<std::vector<std::vector<simd_vector>>>dU_dt_p;
 	std::vector<std::vector<std::vector<simd_vector>>> F_p;
 	std::vector<std::vector<simd_vector>> S_p;
@@ -50,13 +48,14 @@ private:
 	std::vector<simd_vector> con_to_prim(const std::vector<simd_vector>&) const;
 	std::vector<simd_vector> prim_to_con(const std::vector<simd_vector>&) const;
 
-	void apply_limiter(conserved_vars& U0_p, const conserved_vars& UR_p, const conserved_vars& UL_p, dimension dim) const;
+	void apply_limiter(conserved_vars& U0_p, const conserved_vars& UR_p, const conserved_vars& UL_p, const simd_vector fg_p, dimension dim) const;
 	std::vector<simd_vector> prim_to_roe_average(const std::vector<simd_vector>&) const;
 
 
 public:
 	grid();
 	void initialize(std::function<std::vector<real>(real, real, real)>&&);
+	void compute_analytic(std::function<std::vector<real>(real, real, real, real)>&&, real t);
 	real enforce_positivity(integer rk);
 	void compute_flux(integer rk);
 	void compute_du(integer rk);
@@ -64,7 +63,7 @@ public:
 	void project(integer rk);
 	void output( const char*) const;
 	void enforce_boundaries(integer rk);
-	void diagnostics();
+	void diagnostics(real t);
 	void compute_multipoles(integer rk);
 	void compute_interactions(integer rk);
 	void expand_phi(integer rk);
