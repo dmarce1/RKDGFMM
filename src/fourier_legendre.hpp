@@ -8,13 +8,13 @@
 #ifndef FOURIER_LEGENDRE_HPP_
 #define FOURIER_LEGENDRE_HPP_
 
+#include "RKDGFMM.hpp"
+
 #include <boost/archive/binary_oarchive.hpp>
 #include <boost/archive/binary_iarchive.hpp>
 #include <boost/serialization/valarray.hpp>
 #include <boost/serialization/vector.hpp>
 #include <fstream>
-
-#include "RKDGFMM.hpp"
 
 #include "legendre.hpp"
 
@@ -31,6 +31,7 @@ private:
 	static std::vector<real> lobatto_qwt;
 	static std::vector<std::array<real, NDIM>> qpt_3d;
 	static std::vector<simd_vector> transform_coefficient;
+	static std::vector<simd_vector> vertex_inverse_transform_coefficient;
 	static std::vector<simd_vector> inverse_transform_coefficient;
 	static std::vector<std::vector<simd_vector>> dinverse_transform_coefficient_dx;
 	static std::vector<std::vector<simd_vector>> lobatto_inverse_transform_coefficient;
@@ -63,6 +64,7 @@ public:
 	fourier_legendre();
 	static simd_vector transform(const simd_vector&);
 	static simd_vector inverse_transform(const simd_vector&);
+	static simd_vector vertex_inverse_transform(const simd_vector&);
 	static integer lobatto_point_count();
 	static real lobatto_edge_weight();
 	static simd_vector lobatto_inverse_transform(const simd_vector&, dimension);

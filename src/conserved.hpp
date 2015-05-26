@@ -9,6 +9,9 @@
 #define CONSERVED_HPP_
 
 #include "RKDGFMM.hpp"
+#include <boost/serialization/valarray.hpp>
+#include <boost/serialization/vector.hpp>
+
 
 class primitive_vars;
 
@@ -17,8 +20,14 @@ private:
 	static constexpr integer nfields = NF;
 	std::vector<simd_vector> vars;
 public:
+	template<class Arc>
+	void serialize(Arc& arc, const unsigned) {
+		arc & vars;
+	}
+	conserved_vars()  {
+	}
 	conserved_vars(integer sz) :
-			vars(nfields, simd_vector(sz)) {
+		vars(nfields, simd_vector(sz)) {
 	}
 	const simd_vector& operator[](integer i) const {
 		return vars[i];
@@ -56,5 +65,8 @@ public:
 };
 
 std::vector<simd_vector> HLLC_flux(const conserved_vars& UL, const conserved_vars& UR, const simd_vector&, dimension dim);
+
+std::vector<simd_vector> KT_flux(const conserved_vars& UL, const conserved_vars& UR, const simd_vector& phi,
+		dimension dim);
 
 #endif /* CONSERVED_HPP_ */

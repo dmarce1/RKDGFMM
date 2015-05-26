@@ -8,19 +8,37 @@
 #ifndef RKDGFMM_HPP_
 #define RKDGFMM_HPP_
 
+#include <hpx/hpx_init.hpp>
+#include <hpx/include/components.hpp>
+#include <hpx/lcos/wait_all.hpp>
+#include <hpx/lcos/when_all.hpp>
+#include <hpx/lcos/when_any.hpp>
+#include <hpx/hpx_fwd.hpp>
+#include <hpx/lcos/local/mutex.hpp>
+#include <hpx/runtime/actions/component_action.hpp>
+#include <hpx/runtime/components/server/managed_component_base.hpp>
+
+
+
 #include <array>
 #include <valarray>
+
+//#define ANG_MOM
 
 using real = double;
 using integer = long long int;
 
 #define NOGRAVITY
 
+const real rho_floor = 0.0;
+
+#define ALTENERGY
+
 static constexpr integer P = 2;
-static constexpr integer NRK = 2;
+static constexpr integer NRK = P;
 static constexpr integer INX = 16;
 
-static constexpr integer LMAX = P+1;
+static constexpr integer LMAX = P+2;
 static constexpr integer L2 = LMAX*LMAX;
 static constexpr integer NF = 6;
 static constexpr integer BW = 2;
@@ -80,4 +98,10 @@ inline bool xpoint_eq(const xpoint& a, const xpoint& b) {
 	return rc;
 }
 
+
+
+constexpr integer chunk_size = 1000;
+
 #endif /* RKDGFMM_HPP_ */
+
+

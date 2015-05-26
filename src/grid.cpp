@@ -1,4 +1,4 @@
-/*
+/*O.
  * grid.cpp
  *
  *  Created on: Apr 23, 2015
@@ -13,9 +13,23 @@
 #include <silo.h>
 #include <set>
 #include <utility>
+#include <mpi.h>
+
 
 real minmod(real a, real b) {
-	return (std::copysign(real(1), a) + std::copysign(real(1), b)) * std::min(std::abs(a), std::abs(b)) / real(2);
+	real c;
+	if( a*b <= real(0)) {
+		c =real(0);
+	} else if( std::abs(a) < std::abs(b)) {
+		c= a;
+	} else {
+		c= b;
+	}
+	//real c1 = (std::copysign(real(1), a) + std::copysign(real(1), b)) * std::min(std::abs(a), std::abs(b)) / real(2);
+	//if( c1 != c ) {
+	//	printf( "%e %e %e %e\n", a, b, c, c1);
+//	}
+	return c;
 }
 
 simd_vector minmod(const simd_vector& a, const simd_vector& b) {
@@ -28,9 +42,54 @@ simd_vector minmod(const simd_vector& a, const simd_vector& b) {
 	return c;
 }
 
+real grid::step() {
+#ifdef NDEBUG
+		real tstart = MPI_Wtime();
+#endif
+		diagnostics(t);
+		real dt = ((real(2)/real(NX)) / grid_amax) * cfl[NRK - 1];
+		printf("t = %e dt = %e ", double(t + dt), double(dt));
+		for (integer rk = 0; rk != NRK; ++rk) {
+			const integer rk2 = rk == NRK - 1 ? 0 : rk + 1;
+			compute_flux(rk);
+			compute_du(rk);
+			compute_next_u(rk, dt);
+			enforce_boundaries(rk2);
+			phi_h[rk2] = phi_h[rk];
+			gx_h[rk2] = gx_h[rk];
+			gy_h[rk2] = gy_h[rk];
+			gz_h[rk2] = gz_h[rk];
+			enforce_positivity(rk2);
+			project(rk2);
+//			enforce_positivity(rk2);
+			compute_fmm(rk2);
+			if( rk2 == 0) {
+				grid_amax = compute_cfl_condition();
+			}
+		}
+		t += dt;
+		if (output_cnt <= integer(t / output_dt)) {
+			char* tmp_ptr;
+			if (!asprintf(&tmp_ptr, "X.%i.silo", int(output_cnt))) {
+				abort();
+			}
+			printf("*");
+			output(tmp_ptr);
+			++output_cnt;
+			free(tmp_ptr);
+		}
+#ifdef NDEBUG
+		printf( " wt = %e ", MPI_Wtime() - tstart);
+#endif
+		printf( "\n");
+	return t;
+}
+
 grid::grid() :
 		h(real(1) / real(INX)), hinv(real(INX)), gx_h(g_h[XDIM]), gy_h(g_h[YDIM]), gz_h(g_h[ZDIM]) {
 
+	O.resize(NRK+1,std::vector<real>(NF,real(0)));
+	dO_dt.resize(NRK+1,std::vector<real>(NF,real(0)));
 	U_p.resize(NRK + 1, std::vector < conserved_vars > (N3, conserved_vars(P3)));
 	U_h_analytic.resize(N3, conserved_vars(G3));
 	F_p.resize(NFACE,
@@ -42,10 +101,10 @@ grid::grid() :
 	for (integer inx = INX; inx > 1; inx /= 2) {
 		++nlevel;
 	}
-	phi_h.resize(NX * NX * NX, simd_vector(real(0), G3));
-	gx_h.resize(NX * NX * NX, simd_vector(real(0), G3));
-	gy_h.resize(NX * NX * NX, simd_vector(real(0), G3));
-	gz_h.resize(NX * NX * NX, simd_vector(real(0), G3));
+	phi_h.resize(NRK+1,std::vector<simd_vector>(NX * NX * NX, simd_vector(real(0), G3)));
+	gx_h.resize(NRK+1,std::vector<simd_vector>(NX * NX * NX, simd_vector(real(0), G3)));
+	gy_h.resize(NRK+1,std::vector<simd_vector>(NX * NX * NX, simd_vector(real(0), G3)));
+	gz_h.resize(NRK+1,std::vector<simd_vector>(NX * NX * NX, simd_vector(real(0), G3)));
 	phi_l.resize(nlevel);
 	phi_p_analytic.resize(NX * NX * NX, simd_vector(real(0), P3));
 	gx_h_analytic.resize(NX * NX * NX, simd_vector(real(0), G3));
@@ -98,87 +157,199 @@ grid::grid() :
 	}
 }
 
-real grid::enforce_positivity(integer rk) {
-	real amax = real(0);
-	real eps_rho = std::numeric_limits<real>::max();
-	real eps_tau = std::numeric_limits<real>::max();
-	const real cfl = Fourier.lobatto_edge_weight() / real(4);
+
+void grid::enforce_positivity(integer rk) {
+	return enforce_positivity(U_p[rk], phi_h[rk]);
+}
+
+void grid::enforce_positivity(std::vector<conserved_vars>& this_u_p, const std::vector<simd_vector>& this_phi_h ) {
 	const integer G3L = Fourier.lobatto_point_count();
+	std::list<hpx::future<std::pair<real,real>>> futs;
 
-	for (integer iii = 0; iii != N3; ++iii) {
-		if (!is_on_edge[iii]) {
-			auto& u_p = U_p[rk][iii];
+	for( integer i_chunk = 0; i_chunk < N3; i_chunk += chunk_size ) {
+		futs.push_back(hpx::async([&](integer this_i_chunk) {
+			real eps_rho = std::numeric_limits<real>::max();
 			conserved_vars u_h(G3);
-			for (integer f = 0; f != NF; ++f) {
-				u_h[f] = Fourier.inverse_transform(u_p[f]);
-			}
-			const auto egas = u_h.egas();
-			const auto rho = u_h.rho();
-			const auto u = simd_vector(u_h.s(XDIM) / rho);
-			const auto v = simd_vector(u_h.s(YDIM) / rho);
-			const auto w = simd_vector(u_h.s(ZDIM) / rho);
-			const auto ei = simd_vector(egas - rho * (u * u + v * v + w * w) / real(2));
-			for (integer ggg = 0; ggg != G3; ++ggg) {
-				if ((ei[ggg] > dual_energy_switch1) * egas[ggg] && (ei[ggg] > real(0))) {
-					u_h.tau()[ggg] = std::pow(ei[ggg], real(1) / fgamma);
+			for (integer iii = this_i_chunk; iii != N3 && iii != this_i_chunk + chunk_size; ++iii) {
+				auto& u_p = this_u_p[iii];
+				for (integer f = 0; f != NF; ++f) {
+					u_h[f] = Fourier.inverse_transform(u_p[f]);
+				}
+				for (integer iii = this_i_chunk; iii != N3 && iii != this_i_chunk + chunk_size; ++iii) {
+					const simd_vector rho = u_h.rho();
+					eps_rho = std::min(eps_rho, u_p.rho()[0]);
 				}
 			}
-
-			u_p.tau() = Fourier.transform(u_h.tau());
-			eps_rho = std::min(eps_rho, u_p.rho()[0]);
-			eps_tau = std::min(eps_tau, u_p.tau()[0]);
-		}
+			return std::make_pair(eps_rho,eps_rho);
+		}, i_chunk));
 	}
-	eps_rho /= real(2);
-	eps_tau /= real(2);
-	for (integer iii = 0; iii != N3; ++iii) {
-		if (!is_on_edge[iii]) {
+
+	real eps_rho = std::numeric_limits<real>::max();
+	for( auto i = futs.begin(); i != futs.end(); ++i) {
+		auto mns = i->get();
+		eps_rho = std::min(eps_rho, mns.first);
+	}
+	eps_rho *= real(1.00);
+
+
+
+	std::list<hpx::future<void>> futs2;
+
+	for( integer i_chunk = 0; i_chunk < N3; i_chunk += chunk_size ) {
+		futs2.push_back(hpx::async([&](integer this_i_chunk) {
 			std::vector<conserved_vars> u_h(NDIM, conserved_vars(G3L));
-			auto& u_p = U_p[rk][iii];
-			for (integer dim = 0; dim != NDIM; ++dim) {
-				for (integer f = 0; f != NF; ++f) {
-					u_h[dim][f] = Fourier.lobatto_inverse_transform(u_p[f], dimension(dim));
-				}
-			}
-			real rho_min = std::numeric_limits<real>::max();
-			real tau_min = std::numeric_limits<real>::max();
-			for (integer dim = 0; dim != NDIM; ++dim) {
-				rho_min = std::min(rho_min, u_h[dim].rho().min());
-				tau_min = std::min(tau_min, u_h[dim].tau().min());
-			}
-			const real this_rho = u_p.rho()[0];
-			const real this_tau = u_p.tau()[0];
-			const real theta1 = this_rho != rho_min ? (this_rho - eps_rho) / (this_rho - rho_min) : real(1);
-			const real theta2 = this_tau != tau_min ? (this_tau - eps_tau) / (this_tau - tau_min) : real(1);
-			const real theta = std::min(theta1, theta2);
-			if (theta < real(1)) {
-				for (integer f = 0; f != NF; ++f) {
-					for (integer ppp = 1; ppp < P3; ++ppp) {
-						u_p[f][ppp] *= theta;
-					}
+			for (integer iii = this_i_chunk; iii != N3 && iii != this_i_chunk + chunk_size; ++iii) {
+				auto& u_p = this_u_p[iii];
 					for (integer dim = 0; dim != NDIM; ++dim) {
+					for (integer f = 0; f != NF; ++f) {
 						u_h[dim][f] = Fourier.lobatto_inverse_transform(u_p[f], dimension(dim));
 					}
 				}
+				real rho_min = std::numeric_limits<real>::max();
+				for (integer dim = 0; dim != NDIM; ++dim) {
+					rho_min = std::min(rho_min, u_h[dim].rho().min());
+				}
+				const real this_rho = u_p.rho()[0];
+				const real theta = this_rho != rho_min ? (this_rho - eps_rho) / (this_rho - rho_min) : real(1);
+				if (theta < real(1)) {
+					const simd_vector rho_before_p = u_p.rho();
+					for (integer f = 0; f != NF; ++f) {
+						for (integer ppp = 1; ppp < P3; ++ppp) {
+							u_p[f][ppp] *= theta;
+						}
+					}
+					const simd_vector rho_after_p = u_p.rho();
+					const simd_vector drho_h = Fourier.inverse_transform(rho_after_p - rho_before_p);
+					u_p.egas() -= Fourier.transform(drho_h * this_phi_h[iii]);
+
+				}
 			}
-			assert(u_h[XDIM].tau().min() > real(0));
-			assert(u_h[YDIM].tau().min() > real(0));
-			assert(u_h[ZDIM].tau().min() > real(0));
-			for (integer dim = 0; dim != NDIM; ++dim) {
-				const auto prims = u_h[dim].to_primitive();
-				const real a_x = (std::abs(prims.v(XDIM)) + prims.c()).max();
-				const real a_y = (std::abs(prims.v(YDIM)) + prims.c()).max();
-				const real a_z = (std::abs(prims.v(ZDIM)) + prims.c()).max();
-				amax = std::max(amax, a_x + a_y + a_z);
-			}
-		}
+		}, i_chunk));
 	}
+	hpx::wait_all(futs2.begin(), futs2.end());
+
+
+	futs.clear();
+	futs2.clear();
+	for( integer i_chunk = 0; i_chunk < N3; i_chunk += chunk_size ) {
+		futs.push_back(hpx::async([&](integer this_i_chunk) {
+			conserved_vars u_h(G3);
+			real eps_tau = std::numeric_limits<real>::max();
+			for (integer iii = this_i_chunk; iii != N3 && iii != this_i_chunk + chunk_size; ++iii) {
+				auto& u_p = this_u_p[iii];
+				for (integer f = 0; f != NF; ++f) {
+					u_h[f] = Fourier.inverse_transform(u_p[f]);
+				}
+				const simd_vector egas = u_h.egas();
+				const simd_vector rho = u_h.rho();
+				const simd_vector u = simd_vector(u_h.s(XDIM) / rho);
+				const simd_vector v = simd_vector(u_h.s(YDIM) / rho);
+				const simd_vector w = simd_vector(u_h.s(ZDIM) / rho);
+				const simd_vector ei = simd_vector(egas - rho * (u * u + v * v + w * w) / real(2));
+				for (integer ggg = 0; ggg != G3; ++ggg) {
+					if ((ei[ggg] > dual_energy_switch1) * egas[ggg] && (ei[ggg] > real(0))) {
+						u_h.tau()[ggg] = std::pow(ei[ggg], real(1) / fgamma);
+					}
+				}
+				u_p.tau() = Fourier.transform(u_h.tau());
+				eps_tau = std::min(eps_tau, u_p.tau()[0]);
+			}
+			return std::make_pair(eps_tau,eps_tau);
+		}, i_chunk));
+	}
+
+	real eps_tau = std::numeric_limits<real>::max();
+	for( auto i = futs.begin(); i != futs.end(); ++i) {
+		auto mns = i->get();
+		eps_tau = std::min(eps_tau, mns.second);
+	}
+	eps_tau *= real(1.00);
+
+
+
+	for( integer i_chunk = 0; i_chunk < N3; i_chunk += chunk_size ) {
+		futs2.push_back(hpx::async([&](integer this_i_chunk) {
+			std::vector<conserved_vars> u_h(NDIM, conserved_vars(G3L));
+			for (integer iii = this_i_chunk; iii != N3 && iii != this_i_chunk + chunk_size; ++iii) {
+				auto& u_p = this_u_p[iii];
+				for (integer dim = 0; dim != NDIM; ++dim) {
+					for (integer f = 0; f != NF; ++f) {
+						u_h[dim][f] = Fourier.lobatto_inverse_transform(u_p[f], dimension(dim));
+					}
+				}
+				real tau_min = std::numeric_limits<real>::max();
+				for (integer dim = 0; dim != NDIM; ++dim) {
+					tau_min = std::min(tau_min, u_h[dim].tau().min());
+				}
+				const real this_tau = u_p.tau()[0];
+				const real theta = this_tau != tau_min ? (this_tau - eps_tau) / (this_tau - tau_min) : real(1);
+				if (theta < real(1)) {
+					const simd_vector rho_before_p = u_p.rho();
+					for (integer f = 0; f != NF; ++f) {
+						for (integer ppp = 1; ppp < P3; ++ppp) {
+							u_p[f][ppp] *= theta;
+						}
+						for (integer dim = 0; dim != NDIM; ++dim) {
+							u_h[dim][f] = Fourier.lobatto_inverse_transform(u_p[f], dimension(dim));
+						}
+					}
+					const simd_vector rho_after_p = u_p.rho();
+					const simd_vector drho_h = Fourier.inverse_transform(rho_after_p - rho_before_p);
+					u_p.egas() -= Fourier.transform(drho_h * this_phi_h[iii]);
+
+				}
+				assert(u_h[XDIM].tau().min() > real(0));
+				assert(u_h[YDIM].tau().min() > real(0));
+				assert(u_h[ZDIM].tau().min() > real(0));
+			}
+		}, i_chunk));
+	}
+	hpx::wait_all(futs2.begin(), futs2.end());
+}
+
+
+real grid::compute_cfl_condition() {
+	std::vector<conserved_vars>& this_u_p = U_p[0];
+	const real cfl = Fourier.lobatto_edge_weight() / real(4);
+	const integer G3L = Fourier.lobatto_point_count();
+	std::list<hpx::future<real>> futs2;
+
+	real amax = real(0);
+//	for( integer i_chunk = 0; i_chunk < N3; i_chunk += chunk_size ) {
+	//	futs2.push_back(hpx::async([&](integer this_i_chunk) {
+			std::vector<conserved_vars> u_h(NDIM, conserved_vars(G3L));
+			for (integer iii = 0; iii != N3; ++iii) {
+				auto& u_p = this_u_p[iii];
+				for (integer dim = 0; dim != NDIM; ++dim) {
+					for (integer f = 0; f != NF; ++f) {
+						u_h[dim][f] = Fourier.lobatto_inverse_transform(u_p[f], dimension(dim));
+					}
+				}
+				for (integer dim = 0; dim != NDIM; ++dim) {
+					const auto prims = u_h[dim].to_primitive();
+					const real a_x = (std::abs(prims.v(XDIM)) + prims.c()).max();
+					const real a_y = (std::abs(prims.v(YDIM)) + prims.c()).max();
+					const real a_z = (std::abs(prims.v(ZDIM)) + prims.c()).max();
+					amax = std::max(amax, a_x + a_y + a_z);
+				}
+			}
+		//	return amax;
+	//	}, i_chunk));
+//	}
+//	real amax = real(0);
+//	for( auto i = futs2.begin(); i != futs2.end(); ++i) {
+//		amax = std::max(i->get(), amax);
+//	}
 
 	return amax / cfl;
 }
 
+
 void grid::enforce_boundaries(integer rk) {
-	auto& u = U_p[rk];
+	enforce_boundaries(U_p[rk]);
+}
+
+void grid::enforce_boundaries(std::vector<conserved_vars>& u) {
 
 	for (integer j = BW; j != NX - BW; ++j) {
 		for (integer k = BW; k != NX - BW; ++k) {
@@ -193,17 +364,10 @@ void grid::enforce_boundaries(integer rk) {
 					for (integer m = 0; m != P - l; ++m) {
 						for (integer n = 0; n != P - l - m; ++n) {
 							const integer pppx = Fourier.pindex(l, m, n);
-							if (l == 0) {
 								u[im1a][f][pppx] = u[iiia][f][pppx];
 								u[im2a][f][pppx] = u[iiia][f][pppx];
 								u[ip1b][f][pppx] = u[iiib][f][pppx];
 								u[ip2b][f][pppx] = u[iiib][f][pppx];
-							} else {
-								u[im1a][f][pppx] = real(0);
-								u[im2a][f][pppx] = real(0);
-								u[ip1b][f][pppx] = real(0);
-								u[ip2b][f][pppx] = real(0);
-							}
 						}
 					}
 				}
@@ -232,17 +396,10 @@ void grid::enforce_boundaries(integer rk) {
 					for (integer m = 0; m != P - l; ++m) {
 						for (integer n = 0; n != P - l - m; ++n) {
 							const integer pppy = Fourier.pindex(m, l, n);
-							if (l == 0) {
 								u[jm1a][f][pppy] = u[jjja][f][pppy];
 								u[jm2a][f][pppy] = u[jjja][f][pppy];
 								u[jp1b][f][pppy] = u[jjjb][f][pppy];
 								u[jp2b][f][pppy] = u[jjjb][f][pppy];
-							} else {
-								u[jm1a][f][pppy] = real(0);
-								u[jm2a][f][pppy] = real(0);
-								u[jp1b][f][pppy] = real(0);
-								u[jp2b][f][pppy] = real(0);
-							}
 						}
 					}
 				}
@@ -270,17 +427,10 @@ void grid::enforce_boundaries(integer rk) {
 					for (integer m = 0; m != P - l; ++m) {
 						for (integer n = 0; n != P - l - m; ++n) {
 							const integer pppz = Fourier.pindex(m, n, l);
-							if (l == 0) {
 								u[km1a][f][pppz] = u[kkka][f][pppz];
 								u[km2a][f][pppz] = u[kkka][f][pppz];
 								u[kp1b][f][pppz] = u[kkkb][f][pppz];
 								u[kp2b][f][pppz] = u[kkkb][f][pppz];
-							} else {
-								u[km1a][f][pppz] = real(0);
-								u[km2a][f][pppz] = real(0);
-								u[kp1b][f][pppz] = real(0);
-								u[kp2b][f][pppz] = real(0);
-							}
 						}
 					}
 				}
@@ -297,37 +447,65 @@ void grid::enforce_boundaries(integer rk) {
 	}
 }
 
-void grid::project(integer rk) {
-	const auto u0_p = U_p[rk];
-	auto& u_p = U_p[rk];
-	auto ux_p = U_p[rk];
-	auto uy_p = U_p[rk];
-	auto uz_p = U_p[rk];
-	for (integer iii = 0; iii != N3; ++iii) {
-		if (!is_on_edge[iii]) {
-			auto rho_h = Fourier.inverse_transform(u_p[iii].rho());
-			auto fgx = Fourier.transform(rho_h * gx_h[iii]);
-			auto fgy = Fourier.transform(rho_h * gy_h[iii]);
-			auto fgz = Fourier.transform(rho_h * gz_h[iii]);
-			apply_limiter(ux_p[iii], u_p[iii + dx_i], u_p[iii - dx_i], fgx, XDIM);
-			apply_limiter(uy_p[iii], u_p[iii + dy_i], u_p[iii - dy_i], fgy, YDIM);
-			apply_limiter(uz_p[iii], u_p[iii + dz_i], u_p[iii - dz_i], fgz, ZDIM);
-		}
-	}
-	for (integer iii = 0; iii != N3; ++iii) {
-		if (!is_on_edge[iii]) {
-			for (integer f = 0; f != NF; ++f) {
-				u_p[iii][f] = minmod(ux_p[iii][f], minmod(uy_p[iii][f], uz_p[iii][f]));
-			}
-		}
-	}
-	for (integer iii = 0; iii != N3; ++iii) {
-		const auto rho_before_p = u0_p[iii].rho();
-		const auto rho_after_p = u_p[iii].rho();
-		const auto drho_h = Fourier.inverse_transform(rho_after_p - rho_before_p);
-		u_p[iii].egas() -= Fourier.transform(drho_h * phi_h[iii]);
-	}
+integer grid::project(integer rk ) {
+	integer cnt;
+	project(U_p[rk], phi_h[rk], gx_h[rk], gy_h[rk], gz_h[rk]);
+	return cnt;
+}
 
+integer grid::project(std::vector<conserved_vars>& u_p, const std::vector<simd_vector>& this_phi_h,
+		const std::vector<simd_vector>& this_gx_h,
+		const std::vector<simd_vector>& this_gy_h,
+		const std::vector<simd_vector>& this_gz_h ) {
+	integer cnt = 0;
+
+
+		std::list<hpx::future<void>> futs;
+	std::vector<conserved_vars> u0_p(N3, conserved_vars(P3));
+
+	for( integer i_chunk = 0; i_chunk < N3; i_chunk += chunk_size ) {
+		futs.push_back(hpx::async([&](integer this_i_chunk) {
+			for (integer iii = this_i_chunk; iii != N3 && iii != this_i_chunk + chunk_size; ++iii) {
+				u0_p[iii] = u_p[iii];
+			}
+		}, i_chunk));
+	}
+	hpx::wait_all(futs.begin(),futs.end());
+	futs.clear();
+
+
+	for( integer i_chunk = 0; i_chunk < N3; i_chunk += chunk_size ) {
+		futs.push_back(hpx::async([&](integer this_i_chunk) {
+			for (integer iii = this_i_chunk; iii != N3 && iii != this_i_chunk + chunk_size; ++iii) {
+				auto ux_p = u0_p[iii];
+				auto uy_p = u0_p[iii];
+				auto uz_p = u0_p[iii];
+				if (!is_on_edge[iii]) {
+					simd_vector rho_h = Fourier.inverse_transform(u0_p[iii].rho());
+					simd_vector fgx = Fourier.transform(rho_h*this_gx_h[iii]);
+					simd_vector fgy = Fourier.transform(rho_h*this_gy_h[iii]);
+					simd_vector fgz = Fourier.transform(rho_h*this_gz_h[iii]);
+					apply_limiter(ux_p, u0_p[iii + dx_i], u0_p[iii - dx_i], fgx, XDIM);
+					apply_limiter(uy_p, u0_p[iii + dy_i], u0_p[iii - dy_i], fgy, YDIM);
+					apply_limiter(uz_p, u0_p[iii + dz_i], u0_p[iii - dz_i], fgz, ZDIM);
+				}
+				for (integer f = 0; f != NF; ++f) {
+					u_p[iii][f] = minmod(minmod(ux_p[f], uy_p[f]), uz_p[f]);
+					for( integer ppp = 0; ppp != P3; ++ppp) {
+						if( std::abs(u_p[iii][f][ppp] - u0_p[iii][f][ppp]) > 1.0e-6) {
+							++cnt;
+						}
+					}
+				}
+				const simd_vector rho_before_p = u0_p[iii].rho();
+				const simd_vector rho_after_p = u_p[iii].rho();
+				const simd_vector drho_h = Fourier.inverse_transform(rho_after_p - rho_before_p);
+				u_p[iii].egas() -= Fourier.transform(drho_h * this_phi_h[iii]);
+			}
+		}, i_chunk));
+	}
+	hpx::wait_all(futs.begin(),futs.end());
+	return cnt;
 }
 
 void grid::compute_flux(integer rk) {
@@ -339,122 +517,152 @@ void grid::compute_flux(integer rk) {
 			S_p[i][f] = real(0);
 		}
 	}
-	for (integer dim = 0; dim != NDIM; ++dim) {
-		face fcp = face(2 * dim + 1);
-		face fcm = face(2 * dim);
-		conserved_vars Uv_h(G3);
-		conserved_vars Usp_h(G2);
-		conserved_vars Usm_h(G2);
-		for (integer i = NX * NX; i != N3; ++i) {
-			if (is_interior[i] || is_interior[i - d_i[dim]]) {
-				for (integer f = 0; f != NF; ++f) {
-					Usm_h[f] = Fourier.surface_inverse_transform(fcp, u_p[i - d_i[dim]][f]);
-					Usp_h[f] = Fourier.surface_inverse_transform(fcm, u_p[i][f]);
+	std::list<hpx::future<void>> futs;
+	for (integer i_chunk = NX * NX; i_chunk < N3; i_chunk += chunk_size) {
+		futs.push_back(hpx::async([=]() {
+			conserved_vars Uv_h(G3);
+			conserved_vars Usp_h(G2);
+			conserved_vars Usm_h(G2);
+			for( integer i = i_chunk; i != i_chunk+chunk_size && i < N3; ++i) {
+				for (integer dim = 0; dim != NDIM; ++dim) {
+					face fcp = face(2 * dim + 1);
+					face fcm = face(2 * dim);
+					if (is_interior[i] || is_interior[i - d_i[dim]]) {
+						if (is_interior[i] || is_interior[i - d_i[dim]]) {
+							for (integer f = 0; f != NF; ++f) {
+								Usm_h[f] = Fourier.surface_inverse_transform(fcp, u_p[i - d_i[dim]][f]);
+								Usp_h[f] = Fourier.surface_inverse_transform(fcm, u_p[i][f]);
+							}
+							const simd_vector phi_m_p = Fourier.transform(phi_h[rk][i - d_i[dim]]);
+							const simd_vector phi_p_p = Fourier.transform(phi_h[rk][i]);
+							const simd_vector phi_sm_h = Fourier.surface_inverse_transform(fcp, phi_m_p);
+							const simd_vector phi_sp_h = Fourier.surface_inverse_transform(fcm, phi_p_p);
+							simd_vector phi_f = (phi_sm_h + phi_sp_h) * hf;
+							auto surface_flux1 = KT_flux(Usm_h, Usp_h, phi_f, dimension(dim));
+							for (integer f = 0; f != NF; ++f) {
+								simd_vector pflux1 = Fourier.surface_transform(fcp, surface_flux1[f]) * hinv;
+								simd_vector mflux1 = Fourier.surface_transform(fcm, surface_flux1[f]) * hinv;
+								F_p[fcp][i - d_i[dim]][f] = pflux1;
+								F_p[fcm][i][f] = mflux1;
+							}
+						} else {
+							for (integer f = 0; f != NF; ++f) {
+								F_p[fcp][i - d_i[dim]][f] = real(0);
+								F_p[fcm][i][f] = real(0);
+							}
+						}
+					}
+					if (is_interior[i]) {
+						for (integer f = 0; f != NF; ++f) {
+							Uv_h[f] = Fourier.volume_inverse_transform(dimension(dim), u_p[i][f]);
+						}
+						const auto Vv_h = Uv_h.to_primitive();
+						auto volume_flux = Uv_h.flux(Vv_h, dimension(dim));
+						for (integer f = 0; f != NF; ++f) {
+							S_p[i][f] += Fourier.volume_transform(dimension(dim), volume_flux[f]) * hinv;
+						}
+						simd_vector this_rho_p = u_p[i].rho();
+						simd_vector rho_h = Fourier.inverse_transform(this_rho_p);
+						S_p[i][s_i + dim] += Fourier.transform(rho_h * g_h[dimension(dim)][rk][i]);
+						const simd_vector phi_vflux = phi_h[rk][i] * Uv_h[s_i + dim];
+						S_p[i][egas_i] += Fourier.volume_transform(dimension(dim), phi_vflux) * hinv;
+					}
 				}
-
-				const auto Vsp_h = Usp_h.to_primitive();
-				const auto Vsm_h = Usm_h.to_primitive();
-				const real ap = simd_vector(Vsp_h.c() + std::abs(Vsp_h.v(dimension(dim)))).max();
-				const real am = simd_vector(Vsm_h.c() + std::abs(Vsm_h.v(dimension(dim)))).max();
-				const real a = std::max(ap, am);
-				auto fp = Usp_h.flux(Vsp_h, dimension(dim));
-				auto fm = Usm_h.flux(Vsm_h, dimension(dim));
-				const auto phi_m_p = Fourier.transform(phi_h[i - d_i[dim]]);
-				const auto phi_p_p = Fourier.transform(phi_h[i]);
-				const auto phi_sm_h = Fourier.surface_inverse_transform(fcp, phi_m_p);
-				const auto phi_sp_h = Fourier.surface_inverse_transform(fcm, phi_p_p);
-				const simd_vector phi_f = (phi_sm_h + phi_sp_h) * hf;
-				//		auto surface_flux = HLLC_flux(Usm_h, Usp_h, phi_f, dimension(dim));
-
-				std::vector<simd_vector> surface_flux(NF, simd_vector (G2));
-				for (integer f = 0; f != NF; ++f) {
-					surface_flux[f] = ((fp[f] + fm[f]) - a * (Usp_h[f] - Usm_h[f])) * hf;
-				}
-
-				for (integer f = 0; f != NF; ++f) {
-					F_p[fcp][i - d_i[dim]][f] = Fourier.surface_transform(fcp, surface_flux[f]) * hinv;
-					F_p[fcm][i][f] = Fourier.surface_transform(fcm, surface_flux[f]) * hinv;
-				}
-
-				/***********************************************************************************/
-				simd_vector phi_flux = phi_f * (Usp_h[s_i + dim] + Usm_h[s_i + dim] - a * (Usp_h[rho_i] - Usm_h[rho_i]))
-						* hf;
-				F_p[fcp][i - d_i[dim]][egas_i] += Fourier.surface_transform(fcp, phi_flux) * hinv;
-				F_p[fcm][i][egas_i] += Fourier.surface_transform(fcm, phi_flux) * hinv;
-				/***************************************************************************************/
-
 			}
-			if (is_interior[i]) {
-				for (integer f = 0; f != NF; ++f) {
-					Uv_h[f] = Fourier.volume_inverse_transform(dimension(dim), u_p[i][f]);
-				}
-				const auto Vv_h = Uv_h.to_primitive();
-				auto volume_flux = Uv_h.flux(Vv_h, dimension(dim));
-				for (integer f = 0; f != NF; ++f) {
-					S_p[i][f] += Fourier.volume_transform(dimension(dim), volume_flux[f]) * hinv;
-				}
-
-				/***********************************************************************************/
-				const auto phi_vflux = phi_h[i] * Uv_h[s_i + dim];
-				S_p[i][egas_i] += Fourier.volume_transform(dimension(dim), phi_vflux) * hinv;
-				/***************************************************************************************/
-				/****************************************************************************/
-				auto rho_h = Fourier.inverse_transform(u_p[i].rho());
-				//	auto s_h = Fourier.inverse_transform(u_p[i].s(dimension(dim)));
-				S_p[i][s_i + dim] += Fourier.transform(rho_h * g_h[dimension(dim)][i]);
-				//	auto e_p = Fourier.transform(s_h * gx_h[dimension(dim)][i]);
-				//	e_p[0] = real(0);
-				//	S_p[i][egas_i] += e_p;
-				/********************************************************************************/
-
-			}
-		}
+		}));
 	}
+	hpx::wait_all(futs.begin(), futs.end());
 }
 
 void grid::compute_du(integer rk) {
+	const real dV = real(8) * h * h * h;
 	auto& du_dt_p = dU_dt_p[rk];
-	for (integer i = 0; i != N3; ++i) {
-		if (is_interior[i]) {
+	for (integer f = 0; f != NF; ++f) {
+		dO_dt[rk][f] = real(0);
+	}
+	std::list<hpx::future<void>> futs;
+	for( integer i_chunk = 0; i_chunk < N3; i_chunk += chunk_size ) {
+		futs.push_back(hpx::async([&](integer this_i_chunk) {
+			for (integer iii = this_i_chunk; iii != N3 && iii != this_i_chunk + chunk_size; ++iii) {
+				if (is_interior[iii]) {
+					for (integer f = 0; f != NF; ++f) {
+						const simd_vector src = S_p[iii][f];
+						std::array<simd_vector*,NDIM> fp, fm;
+						fp[0] = &F_p[XP][iii][f];
+						fp[1] = &F_p[YP][iii][f];
+						fp[2] = &F_p[ZP][iii][f];
+						fm[0] = &F_p[XM][iii][f];
+						fm[1] = &F_p[YM][iii][f];
+						fm[2] = &F_p[ZM][iii][f];
+						const simd_vector flux = *(fp[0]) + *(fp[1]) + *(fp[2]) - *(fm[0]) - *(fm[1]) - *(fm[2]);
+						du_dt_p[iii][f] = src - flux;
+					}
+				}
+				const simd_vector ep = Fourier.transform((Fourier.inverse_transform(du_dt_p[iii][rho_i]) * phi_h[rk][iii]));
+				du_dt_p[iii][egas_i] -= ep;
+			}
+		}, i_chunk));
+	}
+	hpx::wait_all(futs.begin(),futs.end());
+	for (integer iii = 0; iii != N3; ++iii) {
+		if (is_interior[iii]) {
 			for (integer f = 0; f != NF; ++f) {
-				const simd_vector src = S_p[i][f];
-				const simd_vector flux = F_p[XP][i][f] - F_p[XM][i][f] + F_p[YP][i][f] - F_p[YM][i][f] + F_p[ZP][i][f]
-						- F_p[ZM][i][f];
-				du_dt_p[i][f] = src - flux;
-//				if (f == s_i && std::abs(flux[0]) > 1.0e-3)
-//					printf("%e %e %e \n", src[0], -flux[0], -src[0] / flux[0]);
+				std::array<simd_vector*,NDIM> fp, fm;
+				fp[0] = &F_p[XP][iii][f];
+				fp[1] = &F_p[YP][iii][f];
+				fp[2] = &F_p[ZP][iii][f];
+				fm[0] = &F_p[XM][iii][f];
+				fm[1] = &F_p[YM][iii][f];
+				fm[2] = &F_p[ZM][iii][f];
+				for( integer d = 0; d != NDIM; ++d) {
+					if( !is_interior[iii-d_i[d]] ) {
+						dO_dt[rk][f] -= (*fm[d])[0]*dV;
+					}
+					if( !is_interior[iii+d_i[d]] ) {
+						dO_dt[rk][f] += (*fp[d])[0]*dV;
+					}
+				}
 			}
 		}
-	}
-	for (integer i = 0; i != N3; ++i) {
-		const auto ep = Fourier.transform((Fourier.inverse_transform(du_dt_p[i][rho_i]) * phi_h[i]));
-		du_dt_p[i][egas_i] -= ep;
 	}
 }
 
 void grid::compute_next_u(integer rk, real dt) {
 	const auto& alpha = alpha_rk[NRK - 1];
 	const auto& beta = beta_rk[NRK - 1];
-	for (integer i = 0; i != N3; ++i) {
-		if (is_interior[i]) {
-			for (integer f = 0; f != NF; ++f) {
-				U_p[rk + 1][i][f] = real(0);
-				for (integer k = 0; k < rk + 1; ++k) {
-					U_p[rk + 1][i][f] += alpha[rk][k] * U_p[k][i][f] + beta[rk][k] * dU_dt_p[k][i][f] * dt;
+	std::list<hpx::future<void>> futs;
+
+	for( integer i_chunk = 0; i_chunk < N3; i_chunk += chunk_size ) {
+		futs.push_back(hpx::async([&](integer this_i_chunk) {
+			for (integer iii = this_i_chunk; iii != N3 && iii != this_i_chunk + chunk_size; ++iii) {
+				for (integer f = 0; f != NF; ++f) {
+					U_p[rk + 1][iii][f] = real(0);
+					for (integer k = 0; k < rk + 1; ++k) {
+						U_p[rk + 1][iii][f] += alpha[rk][k]*U_p[k][iii][f] + beta[rk][k] * dU_dt_p[k][iii][f] * dt;
+					}
+				}
+				if (rk + 1 == NRK) {
+					for (integer f = 0; f != NF; ++f) {
+						U_p[0][iii][f] = U_p[rk + 1][iii][f];
+					}
 				}
 			}
+		}, i_chunk));
+	}
+	hpx::wait_all(futs.begin(),futs.end());
+	for (integer f = 0; f != NF; ++f) {
+		O[rk + 1][f] = real(0);
+		for (integer k = 0; k < rk + 1; ++k) {
+			O[rk + 1][f] += alpha[rk][k] * O[k][f] + beta[rk][k] * dO_dt[k][f] * dt	;
 		}
 	}
 	if (rk + 1 == NRK) {
-		for (integer i = 0; i != N3; ++i) {
-			if (is_interior[i]) {
-				for (integer f = 0; f != NF; ++f) {
-					U_p[0][i][f] = U_p[rk + 1][i][f];
-				}
-			}
+		for (integer f = 0; f != NF; ++f) {
+			O[0][f] = O[rk + 1][f];
 		}
 	}
 }
+
 
 void grid::apply_limiter(conserved_vars& U0_p, const conserved_vars& UR_p, const conserved_vars& UL_p,
 		const simd_vector fg_p, dimension dim) const {
@@ -473,7 +681,7 @@ void grid::apply_limiter(conserved_vars& U0_p, const conserved_vars& UR_p, const
 	}
 	const real p = (fgamma - real(1)) * ei;
 	const real c = std::sqrt(fgamma * p / rho);
-	const real h = (p + U0_p.egas()[0]) / rho;
+	const real h0 = (p + U0_p.egas()[0]) / rho;
 
 	auto char_decomp =
 			[&](simd_vector& dC, const real& drho, const real& ds1, const real& ds2, const real& ds3, const real& degas, const real& dtau, const real& fg) {
@@ -481,7 +689,7 @@ void grid::apply_limiter(conserved_vars& U0_p, const conserved_vars& UR_p, const
 				const auto dv = (ds2 - v * drho) / rho;
 				const auto dw = (ds3 - w * drho) / rho;
 				auto dp = (fgamma - real(1)) * (degas - rho * (u * du + v * dv + w * dw) - drho * (u * u + v * v + w * w) / real(2));
-				dp -= fg;
+	//			dp -= fg*h;
 				dC[0] = drho - dp / (c * c);
 				dC[1] = dv;
 				dC[2] = dw;
@@ -492,16 +700,16 @@ void grid::apply_limiter(conserved_vars& U0_p, const conserved_vars& UR_p, const
 
 	auto char_recomp =
 			[&](simd_vector& dC, real& drho, real& ds1, real& ds2, real& ds3, real& degas, real& dtau, real fg) {
-				dC[0] -= fg / (c*c);
-				dC[3] += fg/(rho*c);
-				dC[4] -= fg/(rho*c);
+		//		dC[0] -= fg*h / (c*c);
+		//		dC[3] += fg*h/(rho*c);
+		//		dC[4] -= fg*h/(rho*c);
 				drho = dC[0] + rho / (real(2) * c) * (dC[3] - dC[4]);
 				ds1 = dC[0] * u + rho / (real(2) * c) * (dC[3] * (u + c) - dC[4] * (u - c));
 				ds2 = dC[0] * v + rho * dC[1] + rho * v / (real(2) * c) * (dC[3]- dC[4]);
 				ds3 = dC[0] * w + rho * dC[2] + rho * w / (real(2) * c) * (dC[3]- dC[4]);
 				degas = dC[0] * (u * u + v * v + w * w) / real(2) +
 				rho * (v * dC[1] + w * dC[2]) +
-				rho / (real(2) * c) * (dC[3] * (h + u * c) - dC[4] * (h - u * c));
+				rho / (real(2) * c) * (dC[3] * (h0 + u * c) - dC[4] * (h0 - u * c));
 				dtau = dC[5];
 			};
 
@@ -562,12 +770,12 @@ void grid::apply_limiter(conserved_vars& U0_p, const conserved_vars& UR_p, const
 				}
 				char_recomp(C0, U0_p.rho()[p1], U0_p.s(i1)[p1], U0_p.s(i2)[p1], U0_p.s(i3)[p1], U0_p.egas()[p1],
 						U0_p.tau()[p1], fg_p[p0]);
-
 			}
 		}
 	}
 
 }
+
 
 void grid::initialize(std::function<std::vector<real>(real, real, real)>&& func) {
 	printf( "Initializing\n");
@@ -586,16 +794,40 @@ void grid::initialize(std::function<std::vector<real>(real, real, real)>&& func)
 			for (integer f = 0; f != NF; ++f) {
 				U[f][g] = this_u[f];
 			}
-//			star_force(x,y,z, gx_h_analytic[i][g], gy_h_analytic[i][g], gz_h_analytic[i][g]);
+		//	star_force(x,y,z, gx_h_analytic[i][g], gy_h_analytic[i][g], gz_h_analytic[i][g]);
+		}
+		for (integer f = 0; f != NF; ++f) {
+			U_p[0][i][f] = Fourier.transform(U[f]);
+		}
+		if( i % (NX*NX) == 0 ) {
+			printf( ".");
+		}
 	}
-	for (integer f = 0; f != NF; ++f) {
-		U_p[0][i][f] = Fourier.transform(U[f]);
-	}
-	if( i % (NX*NX) == 0 ) {
-		printf( ".");
-	}
+	printf( "\nDone\n");
+	enforce_boundaries(0);
+	compute_fmm(0);
+	enforce_positivity(0);
+	project(0);
+	t = real(0);
+	enforce_boundaries(0);
+	enforce_positivity(0);
+	grid_amax = compute_cfl_condition();
+	output_dt = 1.0e-2;
+	output_cnt = 0;
+	compute_fmm(0);
+	output("X.0.silo");
+	++output_cnt;
+	printf("t = 0.0 *\n");
 }
-printf( "\nDone\n");
+
+
+void grid::initialize(const char* fname) {
+	printf( "Loading checkpoint\n");
+	load(fname);
+	output_dt = 1.0e-2;
+	output_cnt = integer(t / output_dt) + 1;
+
+
 }
 
 void grid::compute_analytic(std::function<std::vector<real>(real, real, real, real)>&& func, real t) {
@@ -633,21 +865,27 @@ struct node_point {
 };
 
 void grid::output(const char* filename) const {
+	if( system( "cp hello.chk.dat goodbye.chk.dat\n") == 0 ) {
+
+	}
+	save("hello.chk.dat");
+
 	constexpr
 	integer vertex_order[8] = { 0, 1, 3, 2, 4, 5, 7, 6 };
 	std::set<node_point> node_list;
 
 	const integer rk = 0;
-	std::list<integer> zone_list;
+	std::list < integer > zone_list;
 	const auto& quad_weights = Fourier.quadrature_weights();
 	std::vector < real > quad_points(P + 1);
 	quad_points[0] = -h;
 	for (integer p = 0; p != P; ++p) {
 		quad_points[p + 1] = quad_points[p] + quad_weights[p] * h;
 	}
-	for (integer i = BW; i != NX - BW; ++i) {
-		for (integer j = BW; j != NX - BW; ++j) {
-			for (integer k = BW; k != NX - BW; ++k) {
+	constexpr integer this_bw = BW;
+	for (integer i = this_bw; i != NX - this_bw; ++i) {
+		for (integer j = this_bw; j != NX - this_bw; ++j) {
+			for (integer k = this_bw; k != NX - this_bw; ++k) {
 				for (integer gx = 0; gx != P; ++gx) {
 					for (integer gy = 0; gy != P; ++gy) {
 						for (integer gz = 0; gz != P; ++gz) {
@@ -715,7 +953,7 @@ void grid::output(const char* filename) const {
 			"egas_analytic", "tau_analytic", "sx_analytic", "sy_analytic", "sz_analytic", "phi_analytic", "gx_analytic",
 			"gy_analytic", "gz_analytic" };
 	constexpr
-	integer I3 = INX * INX * INX;
+	integer I3 = std::pow(NX-2*this_bw,3);
 	std::vector<double> rho(I3 * G3), sx(I3 * G3), sy(I3 * G3), sz(I3 * G3), egas(I3 * G3), tau(I3 * G3), phi(I3 * G3),
 			gx(I3 * G3), gy(I3 * G3), gz(I3 * G3), phi_analytic(I3 * G3), gx_analytic(I3 * G3), gy_analytic(I3 * G3),
 			gz_analytic(I3 * G3), rho_analytic(I3 * G3), sx_analytic(I3 * G3), sy_analytic(I3 * G3), sz_analytic(
@@ -725,23 +963,23 @@ void grid::output(const char* filename) const {
 			tau_analytic.data(), sx_analytic.data(), sy_analytic.data(), sz_analytic.data(), phi_analytic.data(),
 			gx_analytic.data(), gy_analytic.data(), gz_analytic.data() };
 	index = 0;
-	for (integer i = BW; i != NX - BW; ++i) {
-		for (integer j = BW; j != NX - BW; ++j) {
-			for (integer k = BW; k != NX - BW; ++k) {
+	for (integer i = this_bw; i != NX - this_bw; ++i) {
+		for (integer j = this_bw; j != NX - this_bw; ++j) {
+			for (integer k = this_bw; k != NX - this_bw; ++k) {
 				const integer iii = NX * NX * i + NX * j + k;
 				for (integer f = 0; f != NF; ++f) {
-					auto U_h = Fourier.inverse_transform(U_p[rk][iii][f]);
+					simd_vector U_h = Fourier.inverse_transform(U_p[rk][iii][f]);
 					for (integer ggg = 0; ggg != G3; ++ggg) {
 						u_data[f][index + ggg] = U_h[ggg];
 						u_data[f + (NF + 1 + NDIM)][index + ggg] = U_h_analytic[iii][f][ggg];
 					}
 				}
-				auto phi_h_analytic = Fourier.inverse_transform(phi_p_analytic[iii]);
+				simd_vector phi_h_analytic = Fourier.inverse_transform(phi_p_analytic[iii]);
 				for (integer ggg = 0; ggg != G3; ++ggg) {
-					u_data[NF][index + ggg] = phi_h[iii][ggg];
-					u_data[NF + 1 + XDIM][index + ggg] = gx_h[iii][ggg];
-					u_data[NF + 1 + YDIM][index + ggg] = gy_h[iii][ggg];
-					u_data[NF + 1 + ZDIM][index + ggg] = gz_h[iii][ggg];
+					u_data[NF][index + ggg] = phi_h[0][iii][ggg];
+					u_data[NF + 1 + XDIM][index + ggg] = gx_h[0][iii][ggg];
+					u_data[NF + 1 + YDIM][index + ggg] = gy_h[0][iii][ggg];
+					u_data[NF + 1 + ZDIM][index + ggg] = gz_h[0][iii][ggg];
 					u_data[2 * NF + 1 + NDIM][index + ggg] = phi_h_analytic[ggg];
 					u_data[2 * NF + 2 + NDIM + XDIM][index + ggg] = gx_h_analytic[iii][ggg];
 					u_data[2 * NF + 2 + NDIM + YDIM][index + ggg] = gy_h_analytic[iii][ggg];
@@ -760,79 +998,83 @@ void grid::output(const char* filename) const {
 
 void grid::compute_multipoles(integer rk) {
 	integer lev = 0;
-	for (integer iii = 0; iii != N3; ++iii) {
-		if (is_interior[iii]) {
-			rho_l[lev][iii] = Fourier.p2m_transform(U_p[rk][iii].rho(), h);
-		} else {
-			rho_l[lev][iii] = real(0);
-		}
-	}
-	for (integer inx = INX / 2; inx > 1; inx >>= 1) {
-		++lev;
+	for (integer inx = INX; inx > 1; inx >>= 1) {
 		const integer nxp = inx + 2 * BW;
 		const integer nxc = (2 * inx) + 2 * BW;
 		std::fill(std::begin(rho_l[lev]), std::end(rho_l[lev]), simd_vector(real(0), L2));
+		std::list<hpx::future<void>> futs;
 		for (integer ip = BW; ip != nxp - BW; ++ip) {
-			for (integer jp = BW; jp != nxp - BW; ++jp) {
-				for (integer kp = BW; kp != nxp - BW; ++kp) {
-					for (integer ci = 0; ci != NVERTEX; ++ci) {
-						const integer ic = (2 * ip - BW) + ((ci >> 0) & 1);
-						const integer jc = (2 * jp - BW) + ((ci >> 1) & 1);
-						const integer kc = (2 * kp - BW) + ((ci >> 2) & 1);
-						const integer iiic = nxc * nxc * ic + nxc * jc + kc;
-						const integer iiip = nxp * nxp * ip + nxp * jp + kp;
-						rho_l[lev][iiip] += Fourier.m2m_transform(ci, rho_l[lev - 1][iiic], real(1 << (lev - 1)) * h);
+			futs.push_back(hpx::async([=](){
+				for (integer jp = BW; jp != nxp - BW; ++jp) {
+					for (integer kp = BW; kp != nxp - BW; ++kp) {
+						if( lev != 0 ) {
+							for (integer ci = 0; ci != NVERTEX; ++ci) {
+								const integer ic = (2 * ip - BW) + ((ci >> 0) & 1);
+								const integer jc = (2 * jp - BW) + ((ci >> 1) & 1);
+								const integer kc = (2 * kp - BW) + ((ci >> 2) & 1);
+								const integer iiic = nxc * nxc * ic + nxc * jc + kc;
+								const integer iiip = nxp * nxp * ip + nxp * jp + kp;
+								const simd_vector this_rho = rho_l[lev - 1][iiic];
+								const real this_dx = real(1 << (lev - 1)) * h;
+								rho_l[lev][iiip] += Fourier.m2m_transform(ci, this_rho, this_dx );
+							}
+						} else {
+							const integer iii = nxp * nxp * ip + nxp * jp + kp;
+							simd_vector this_rho = U_p[rk][iii].rho();
+							this_rho[0] -= rho_floor;
+							if (is_interior[iii]) {
+								rho_l[lev][iii] = Fourier.p2m_transform(this_rho, h);
+							} else {
+								rho_l[lev][iii] = real(0);
+							}
+						}
 					}
 				}
-			}
+			}));
 		}
+		hpx::wait_all(futs.begin(), futs.end());
+		++lev;
 	}
 	lev = 1;
-	/*	const integer nxp = (INX >> lev) + 2 * BW;
-	 for (integer ip = BW; ip != nxp - BW; ++ip) {
-	 for (integer jp = BW; jp != nxp - BW; ++jp) {
-	 for (integer kp = BW; kp != nxp - BW; ++kp) {
-	 const integer iiip = nxp * nxp * ip + nxp * jp + kp;
-	 printf("%i %i %i %e %e %e %e\n", int(ip - BW), int(jp - BW), int(kp - BW), rho_l[lev][iiip][0], rho_l[lev][iiip][1], rho_l[lev][iiip][2], rho_l[lev][iiip][3]);
-	 }
-	 }
-	 }
-	 abort();*/
 }
 
 void grid::compute_interactions(integer rk) {
 	integer lev = nlevel - 1;
+	std::list<hpx::future<void>> futs;
 	for (integer inx = 2; inx <= INX; inx <<= 1) {
 		const integer nx = inx + 2 * BW;
-		for (integer i0 = BW; i0 != nx - BW; ++i0) {
-			for (integer j0 = BW; j0 != nx - BW; ++j0) {
-				for (integer k0 = BW; k0 != nx - BW; ++k0) {
-					const integer iii0 = i0 * nx * nx + j0 * nx + k0;
-					phi_l[lev][iii0] = real(0);
-					const integer imin = 2 * ((i0 / 2) - 1);
-					const integer imax = 2 * ((i0 / 2) + 1) + 1;
-					const integer jmin = 2 * ((j0 / 2) - 1);
-					const integer jmax = 2 * ((j0 / 2) + 1) + 1;
-					const integer kmin = 2 * ((k0 / 2) - 1);
-					const integer kmax = 2 * ((k0 / 2) + 1) + 1;
-					for (integer i1 = imin; i1 <= imax; ++i1) {
-						for (integer j1 = jmin; j1 <= jmax; ++j1) {
-							for (integer k1 = kmin; k1 <= kmax; ++k1) {
-								const integer iii1 = i1 * nx * nx + j1 * nx + k1;
-								integer max_dist = std::max(std::abs(i0 - i1), std::abs(j0 - j1));
-								max_dist = std::max(std::abs(k0 - k1), max_dist);
-								if (max_dist > 1) {
-									phi_l[lev][iii0] += Fourier.m2l_transform(i0 - i1, j0 - j1, k0 - k1,
-											rho_l[lev][iii1], real(1 << lev) * h);
+		for (integer i0 = 1; i0 != nx-1 ; ++i0) {
+			futs.push_back(hpx::async([=]() {
+				for (integer j0 = 1; j0 != nx-1; ++j0) {
+					for (integer k0 = 1; k0 != nx-1; ++k0) {
+						const integer iii0 = i0 * nx * nx + j0 * nx + k0;
+						phi_l[lev][iii0] = real(0);
+						const integer imin = std::max(integer(0),2 * ((i0 / 2) - 1));
+						const integer imax = std::min(integer(nx-1),2 * ((i0 / 2) + 1) + 1);
+						const integer jmin = std::max(integer(0),2 * ((j0 / 2) - 1));
+						const integer jmax = std::min(integer(nx-1),2 * ((j0 / 2) + 1) + 1);
+						const integer kmin = std::max(integer(0),2 * ((k0 / 2) - 1));
+						const integer kmax = std::min(integer(nx-1),2 * ((k0 / 2) + 1) + 1);
+						for (integer i1 = imin; i1 <= imax; ++i1) {
+							for (integer j1 = jmin; j1 <= jmax; ++j1) {
+								for (integer k1 = kmin; k1 <= kmax; ++k1) {
+									const integer iii1 = i1 * nx * nx + j1 * nx + k1;
+									integer max_dist = std::max(std::abs(i0 - i1), std::abs(j0 - j1));
+									max_dist = std::max(std::abs(k0 - k1), max_dist);
+									if (max_dist > 1  && lev != 0 ) {
+										phi_l[lev][iii0] += Fourier.m2l_transform(i0 - i1, j0 - j1, k0 - k1,
+												rho_l[lev][iii1], real(1 << lev) * h);
+									}
 								}
 							}
 						}
 					}
 				}
-			}
+			}));
 		}
 		--lev;
 	}
+	hpx::wait_all(futs.begin(),futs.end());
 }
 
 void grid::expand_phi(integer rk) {
@@ -841,96 +1083,98 @@ void grid::expand_phi(integer rk) {
 		--lev;
 		const integer nxp = (inx / 2) + 2 * BW;
 		const integer nxc = inx + 2 * BW;
-		for (integer ip = BW; ip != nxp - BW; ++ip) {
-			for (integer jp = BW; jp != nxp - BW; ++jp) {
-				for (integer kp = BW; kp != nxp - BW; ++kp) {
-					const integer iiip = nxp * nxp * ip + nxp * jp + kp;
-					for (integer ci = 0; ci != NVERTEX; ++ci) {
-						const integer ic = (2 * ip - BW) + ((ci >> 0) & 1);
-						const integer jc = (2 * jp - BW) + ((ci >> 1) & 1);
-						const integer kc = (2 * kp - BW) + ((ci >> 2) & 1);
-						const integer iiic = nxc * nxc * ic + nxc * jc + kc;
-						phi_l[lev][iiic] += Fourier.l2l_transform(ci, phi_l[lev + 1][iiip], real(1 << lev) * h);
+		std::list<hpx::future<void>> futs;
+		for (integer ip = 1; ip != nxp - 1; ++ip) {
+			futs.push_back(hpx::async([=]() {
+				for (integer jp = 1; jp != nxp - 1; ++jp) {
+					for (integer kp = 1; kp != nxp - 1; ++kp) {
+						const integer iiip = nxp * nxp * ip + nxp * jp + kp;
+						for (integer ci = 0; ci != NVERTEX; ++ci) {
+							const integer ic = (2 * ip - BW) + ((ci >> 0) & 1);
+							const integer jc = (2 * jp - BW) + ((ci >> 1) & 1);
+							const integer kc = (2 * kp - BW) + ((ci >> 2) & 1);
+							const integer iiic = nxc * nxc * ic + nxc * jc + kc;
+							phi_l[lev][iiic] += Fourier.l2l_transform(ci, phi_l[lev + 1][iiip], real(1 << lev) * h);
+						}
 					}
 				}
-			}
+			}));
 		}
+		hpx::wait_all(futs.begin(),futs.end());
 	}
 }
 
 void grid::compute_force(integer rk) {
-	for (integer iii = 0; iii != N3; ++iii) {
-		if (is_interior[iii]) {
-			phi_h[iii] = real(0);
-			gx_h[iii] = real(0);
-			gy_h[iii] = real(0);
-			gz_h[iii] = real(0);
-		}
-	}
-	for (integer i1 = BW; i1 != NX - BW; ++i1) {
-		for (integer j1 = BW; j1 != NX - BW; ++j1) {
-			for (integer k1 = BW; k1 != NX - BW; ++k1) {
-				const integer iii1 = i1 * dx_i + j1 * dy_i + k1 * dz_i;
-				for (integer i2 = i1 - 1; i2 <= i1 + 1; ++i2) {
-					for (integer j2 = j1 - 1; j2 <= j1 + 1; ++j2) {
-						for (integer k2 = k1 - 1; k2 <= k1 + 1; ++k2) {
-							const integer iii2 = i2 * dx_i + j2 * dy_i + k2 * dz_i;
-							if (is_interior[iii2]) {
-								const integer di = i1 - i2;
-								const integer dj = j1 - j2;
-								const integer dk = k1 - k2;
-								phi_h[iii1] -= Fourier.p2_phi_transform(di, dj, dk, U_p[rk][iii2].rho(), h);
-								gx_h[iii1] -= Fourier.p2_gx_transform(di, dj, dk, U_p[rk][iii2].rho(), h) * hinv;
-								gy_h[iii1] -= Fourier.p2_gy_transform(di, dj, dk, U_p[rk][iii2].rho(), h) * hinv;
-								gz_h[iii1] -= Fourier.p2_gz_transform(di, dj, dk, U_p[rk][iii2].rho(), h) * hinv;
+
+	std::list<hpx::future<void>> futs;
+	for (integer i1 = 1; i1 != NX-1 ; ++i1) {
+		futs.push_back(hpx::async([=]() {
+			for (integer j1 = 1; j1 != NX-1 ; ++j1) {
+				for (integer k1 = 1; k1 != NX-1; ++k1) {
+					const integer iii1 = i1 * dx_i + j1 * dy_i + k1 * dz_i;
+					phi_h[rk][iii1] = real(0);
+					gx_h[rk][iii1] = real(0);
+					gy_h[rk][iii1] = real(0);
+					gz_h[rk][iii1] = real(0);
+					const integer imin = std::max(integer(0), 2*(i1/2 - 1));
+					const integer jmin = std::max(integer(0), 2*(j1/2 - 1));
+					const integer kmin = std::max(integer(0), 2*(k1/2 - 1));
+					const integer imax = std::min(integer(NX-1), 2*(i1/2 + 1)+1);
+					const integer jmax = std::min(integer(NX-1), 2*(j1/2 + 1)+1);
+					const integer kmax = std::min(integer(NX-1), 2*(k1/2 + 1)+1);
+					for (integer i2 = imin; i2 <= imax; ++i2) {
+						for (integer j2 = jmin; j2 <= jmax; ++j2) {
+							for (integer k2 = kmin; k2 <= kmax; ++k2) {
+								const integer iii2 = i2 * dx_i + j2 * dy_i + k2 * dz_i;
+								if (is_interior[iii2]) {
+									const integer di = i1 - i2;
+									const integer dj = j1 - j2;
+									const integer dk = k1 - k2;
+									phi_h[rk][iii1] -= Fourier.p2_phi_transform(di, dj, dk, U_p[rk][iii2].rho(), h);
+									gx_h[rk][iii1] -= Fourier.p2_gx_transform(di, dj, dk, U_p[rk][iii2].rho(), h) * hinv;
+									gy_h[rk][iii1] -= Fourier.p2_gy_transform(di, dj, dk, U_p[rk][iii2].rho(), h) * hinv;
+									gz_h[rk][iii1] -= Fourier.p2_gz_transform(di, dj, dk, U_p[rk][iii2].rho(), h) * hinv;
+								}
 							}
 						}
 					}
+					phi_h[rk][iii1] -= Fourier.l2p_transform(phi_l[0][iii1], h);
+					gx_h[rk][iii1] -= Fourier.dl2p_transform_dx(XDIM, phi_l[0][iii1], h) * hinv;
+					gy_h[rk][iii1] -= Fourier.dl2p_transform_dx(YDIM, phi_l[0][iii1], h) * hinv;
+					gz_h[rk][iii1] -= Fourier.dl2p_transform_dx(ZDIM, phi_l[0][iii1], h) * hinv;
 				}
 			}
-		}
+		}));
 	}
-	for (integer iii = 0; iii != N3; ++iii) {
-		if (is_interior[iii]) {
-			phi_h[iii] -= Fourier.l2p_transform(phi_l[0][iii], h);
-			gx_h[iii] -= Fourier.dl2p_transform_dx(XDIM, phi_l[0][iii], h) * hinv;
-			gy_h[iii] -= Fourier.dl2p_transform_dx(YDIM, phi_l[0][iii], h) * hinv;
-			gz_h[iii] -= Fourier.dl2p_transform_dx(ZDIM, phi_l[0][iii], h) * hinv;
-		}
-	}
+	hpx::wait_all(futs.begin(), futs.end());
 }
 
 void grid::diagnostics(real t) {
-	real sum = real(0);
-	real norm = real(0);
-//printf("\n");
-	real fx = real(0);
-	real fy = real(0);
-	real fz = real(0);
-	real esum = real(0);
-	real msum = real(0);
+	std::vector<real> sum_in(NF,real(0));
+	const real dV = real(8) * h * h * h;
+//	real gx_err = real(0);
+//	real gx_norm = real(0);
 	for (integer iii = 0; iii != N3; ++iii) {
 		if (is_interior[iii]) {
-			auto numerical = gx_h[iii];
-			auto analytic = gx_h_analytic[iii];
-			simd_vector l2(G3);
-			l2 = std::pow(numerical - analytic, real(2));
-			norm += (gx_h[iii] * gx_h[iii]).sum();
-			sum += Fourier.transform(l2)[0];
-
-			const auto rho_h = Fourier.inverse_transform((U_p[0][iii].rho()));
-			const real dV = real(8) * h * h * h;
-			fx += Fourier.transform(rho_h * gx_h[iii])[0] * dV;
-			fy += Fourier.transform(rho_h * gy_h[iii])[0] * dV;
-			fz += Fourier.transform(rho_h * gz_h[iii])[0] * dV;
-			esum += (U_p[0][iii].egas()[0] + Fourier.transform(phi_h[iii] * rho_h)[0] / real(2)) * dV;
-			msum += Fourier.transform(rho_h)[0] * dV;
+			const simd_vector rho_h = Fourier.inverse_transform((U_p[0][iii].rho()));
+			const auto rho_phi = Fourier.transform(phi_h[0][iii]*rho_h)[0];
+			for( integer f = 0; f != NF; ++f) {
+				sum_in[f] += U_p[0][iii][f][0]*dV;
+			}
+			sum_in[egas_i] += rho_phi/real(2)*dV;
+	//		gx_err += std::pow(gx_h[0][iii] - gx_h_analytic[iii],real(2)).sum();
+//			gx_norm += std::pow(gx_h_analytic[iii],real(2)).sum();
 		}
 	}
 	FILE* fp = fopen("diag.dat", "at");
-//	printf("Error sum = %e fx = %e fy = %e fz = %e \n", std::sqrt(sum / norm), fx, fy, fz);
-	fprintf(fp, "%e %e %e\n", t, esum, msum);
+	fprintf(fp, "%e ", double(t));
+	for( integer f = 0; f != NF; ++f) {
+		fprintf(fp, "%.9e %.9e ", double(sum_in[f]), double(sum_in[f]+O[0][f]));
+	}
+	fprintf(fp, "\n");
 	fclose(fp);
-
+//	printf( "%e\n", gx_err/gx_norm);
+//	sleep(5);
+//	abort();
 }
 

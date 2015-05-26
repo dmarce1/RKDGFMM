@@ -52,6 +52,7 @@ c..initial guesses
 c..maximum number of iterations and maxium allowable relative error
          itmax = 20
          eps   = 1.e-5
+         p4 = 0
 
          do iter = 1, itmax
           f1 = f(p41, p1, p5, rho1, rho5, gamma)

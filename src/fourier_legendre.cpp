@@ -1,9 +1,3 @@
-/*
- * fourier_legendre.cpp
- *
- *  Created on: Apr 23, 2015
- *      Author: dmarce1
- */
 
 #include "fourier_legendre.hpp"
 #include "legendre.hpp"

@@ -12,8 +12,8 @@ void riemann_(double* rhol, double* pl, double* ul, double* rhor, double* pr, do
 		double* x, double* rho, double* u, double* p);
 }
 
-std::vector<real> sod_shock_tube_analytic(real x, real y, real z, real t) {
-	real rho, egas, s;
+std::vector<real> sod_shock_tube_analytic(real _x, real y, real z, real _t) {
+	double rho, egas, s;
 	double rho_l = sod_rho_l;
 	double rho_r = sod_rho_r;
 	double p_l = sod_p_l;
@@ -22,6 +22,8 @@ std::vector<real> sod_shock_tube_analytic(real x, real y, real z, real t) {
 	double u_r = real(0);
 	double gamma = fgamma;
 	double u, p;
+	double t = _t;
+	double x = _x;
 	riemann_(&rho_l, &p_l, &u_l, &rho_r, &p_r, &u_r, &gamma, &t, &x, &rho, &u, &p);
 	s = rho * u;
 	egas = p / (gamma - real(1)) + s * u / real(2);

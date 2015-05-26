@@ -10,13 +10,13 @@
 #include <atomic>
 
 const real x0 = 0.0;
-const real y0_ = -0.0;
+const real y0_ = 0.0;
 const real z0 = 0.0;
 constexpr
 real rmax = 3.7;
 constexpr
 real dr = rmax / 128.0;
-const real alpha = real(1) / real(6);
+const real alpha = real(1) / real(4);
 
 std::vector<real> star(real x, real y, real z) {
 	x -= x0;
@@ -24,7 +24,7 @@ std::vector<real> star(real x, real y, real z) {
 	z -= z0;
 	real theta;
 	const real n = real(1) / (fgamma - real(1));
-	const real rho_min = 1.0e-4;
+	const real rho_min = 1.0e-3;
 	std::vector < real > u(NF, real(0));
 	const real r = std::sqrt(x * x + y * y + z * z) / alpha;
 	const real theta_min = std::pow(rho_min, real(1) / n);
@@ -37,6 +37,9 @@ std::vector<real> star(real x, real y, real z) {
 	}
 	u[rho_i] = std::pow(theta, n);
 	u[egas_i] = std::pow(theta, fgamma * n) * c0 / (fgamma - real(1));
+	//if (theta <= theta_min) {
+	//	u[egas_i] *= real(100);
+	//}
 	u[tau_i] = std::pow(u[egas_i], (real(1) / real(fgamma)));
 	return u;
 }

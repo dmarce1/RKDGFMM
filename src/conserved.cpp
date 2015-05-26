@@ -32,6 +32,53 @@ primitive_vars conserved_vars::to_primitive() const {
 	return v;
 }
 
+std::vector<simd_vector> KT_flux(const conserved_vars& UL, const conserved_vars& UR, const simd_vector& phi,
+		dimension dim) {
+	std::vector<simd_vector> F(NF, simd_vector (G2));
+	real a = real(0);
+	for (integer g = 0; g != G2; ++g) {
+		const real rhoL = UL.rho()[g];
+		const real vL = UL.s(dim)[g] / UL.rho()[g];
+		const real ekL = (UL.s(XDIM)[g] * UL.s(XDIM)[g] + UL.s(YDIM)[g] * UL.s(YDIM)[g] + UL.s(ZDIM)[g] * UL.s(ZDIM)[g])
+				/ UL.rho()[g] / real(2);
+		real eiL = UL.egas()[g] - ekL;
+		if (eiL < dual_energy_switch2 * UL.egas()[g]) {
+			eiL = std::pow(UL.tau()[g], fgamma);
+		}
+		const real pL = (fgamma - real(1)) * eiL;
+		const real cL = std::sqrt(fgamma * pL / rhoL);
+		const real aL = cL + std::abs(vL);
+		const real rhoR = UR.rho()[g];
+		const real vR = UR.s(dim)[g] / UR.rho()[g];
+		const real ekR = (UR.s(XDIM)[g] * UR.s(XDIM)[g] + UR.s(YDIM)[g] * UR.s(YDIM)[g] + UR.s(ZDIM)[g] * UR.s(ZDIM)[g])
+				/ UR.rho()[g] / real(2);
+		real eiR = UR.egas()[g] - ekR;
+		if (eiR < dual_energy_switch2 * UR.egas()[g]) {
+			eiR = std::pow(UR.tau()[g], fgamma);
+		}
+		const real pR = (fgamma - real(1)) * eiR;
+		const real cR = std::sqrt(fgamma * pR / rhoR);
+		const real aR = cR + std::abs(vR);
+
+		a = std::max(a, aL);
+		a = std::max(a, aR);
+
+		for (integer f = 0; f != NF; ++f) {
+			F[f][g] = (vR * UR[f][g] + vL * UL[f][g]) / real(2);
+		}
+		F[s_i + dim][g] += (pL + pR) / real(2);
+		F[egas_i][g] += (pL * vL + pR * vR) / real(2);
+		F[egas_i][g] += (rhoL * vL + rhoR * vR) * phi[g] / real(2);
+	}
+	for (integer g = 0; g != G2; ++g) {
+		for (integer f = 0; f != NF; ++f) {
+			F[f][g] -= (a * (UR[f][g] - UL[f][g])) / real(2);
+		}
+		F[egas_i][g] -= (UR.rho()[g] - UL.rho()[g]) * a * phi[g] / real(2);
+	}
+	return F;
+}
+
 std::vector<simd_vector> HLLC_flux(const conserved_vars& UL, const conserved_vars& UR, const simd_vector& phi,
 		dimension dim) {
 	std::vector<simd_vector> F(NF, simd_vector (G2));
