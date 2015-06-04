@@ -1,19 +1,15 @@
-src/grid.d: ../src/grid.cpp ../src/grid.hpp ../src/RKDGFMM.hpp \
- ../src/initial.hpp ../src/fourier_legendre.hpp ../src/legendre.hpp \
- ../src/conserved.hpp ../src/primitive.hpp ../src/rk.hpp
+src/grid.d: ../src/grid.cpp ../src/grid.hpp ../src/defs.hpp \
+ ../src/roe.hpp ../src/multipole.hpp ../src/space_vector.hpp \
+ ../src/expansion.hpp
 
 ../src/grid.hpp:
 
-../src/RKDGFMM.hpp:
+../src/defs.hpp:
 
-../src/initial.hpp:
+../src/roe.hpp:
 
-../src/fourier_legendre.hpp:
+../src/multipole.hpp:
 
-../src/legendre.hpp:
+../src/space_vector.hpp:
 
-../src/conserved.hpp:
-
-../src/primitive.hpp:
-
-../src/rk.hpp:
+../src/expansion.hpp:

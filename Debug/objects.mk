@@ -4,5 +4,5 @@
 
 USER_OBJS :=
 
-LIBS := -lsilo -lboost_serialization
+LIBS := -lboost_serialization -lmpi -lgfortran -lsilo
 

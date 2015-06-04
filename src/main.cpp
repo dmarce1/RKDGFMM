@@ -1,34 +1,37 @@
-/*
- * main.cpp
- *
- *  Created on: Apr 11, 2015
- *      Author: dmarce1
- */
-
 #include "grid.hpp"
-#include "rk.hpp"
-#include "tests/initial.hpp"
-#include "tests/tests.hpp"
+#include "problem.hpp"
+#ifndef NDEBUG
 #include <fenv.h>
-#include <boost/chrono.hpp>
-#include <mpi.h>
+#endif
 
-#define TMAX 100.0
-
-int hpx_main(int argc, char* argv[]) {
+int main(int argc, char* argv[]) {
 #ifndef NDEBUG
 	feenableexcept(FE_DIVBYZERO);
 	feenableexcept(FE_INVALID);
 	feenableexcept(FE_OVERFLOW);
 #endif
-	grid g;
-	if( argc > 1 ) {
-		g.initialize(argv[1]);
-	} else {
-		g.initialize(star);
+	char* fname;
+	grid root(star);
+	real t = 0.0;
+	integer step = 0;
+	if (argc > 1) {
+		root.load(argv[1]);
+		t = root.get_time();
+		step = root.get_step();
 	}
-	while (g.step() < TMAX) {
+	real tmax = 100.0;
+	while (t < tmax) {
+		real dt = root.step();
+		printf("%i %e %e\n", int(step), double(t), double(dt));
+		t += dt;
+		//if (step % 10 == 0) {
+			if (!asprintf(&fname, "X.%i.silo", int(step))) {
+				abort();
+			}
+			root.output(fname);
+			free(fname);
+	//	}
+		++step;
 	}
-	return 0;
 }
 

@@ -38,19 +38,19 @@ endif
 # Add inputs and outputs from these tool invocations to the build variables 
 
 # All Target
-all: RKDGFMM
+all: FVFMM
 
 # Tool invocations
-RKDGFMM: $(OBJS) $(USER_OBJS)
+FVFMM: $(OBJS) $(USER_OBJS)
 	@echo 'Building target: $@'
 	@echo 'Invoking: GCC C++ Linker'
-	g++  -o "RKDGFMM" $(OBJS) $(USER_OBJS) $(LIBS)
+	g++  $(OBJS) $(USER_OBJS) $(LIBS)  `pkg-config --libs hpx_application`  -o "FVFMM"  `pkg-config --libs hpx_application`
 	@echo 'Finished building target: $@'
 	@echo ' '
 
 # Other Targets
 clean:
-	-$(RM) $(OBJS)$(C++_DEPS)$(C_DEPS)$(CC_DEPS)$(CPP_DEPS)$(EXECUTABLES)$(CXX_DEPS)$(C_UPPER_DEPS) RKDGFMM
+	-$(RM) $(OBJS)$(C++_DEPS)$(C_DEPS)$(CC_DEPS)$(CPP_DEPS)$(EXECUTABLES)$(CXX_DEPS)$(C_UPPER_DEPS) FVFMM
 	-@echo ' '
 
 .PHONY: all clean dependents
